@@ -207,8 +207,8 @@ body.conectando header .period,body.conectando #quick,body.conectando nav.tabs,b
 <main class="wrap" id="app"><div class="empty">Carregando…</div></main>
 <dialog id="dlg"></dialog>
 <div id="toast" class="toast" hidden></div>
-<input type="file" id="fileInput" accept="application/pdf,.pdf" multiple hidden>
-<input type="file" id="bkInput" accept=".json,application/json" hidden>
+<input type="file" id="fileInput" accept="application/pdf,.pdf,.json,application/json,text/plain" multiple hidden>
+<input type="file" id="bkInput" hidden>
 <script>
 /* ============ utilidades ============ */
 const $=s=>document.querySelector(s);
@@ -1128,11 +1128,19 @@ document.addEventListener('input',ev=>{ const t=ev.target;
   if(t.id==='bq'){ S.filtro.bq=t.value; clearTimeout(S._bt); S._bt=setTimeout(()=>{ render(); const b=$('#bq'); if(b){ b.focus(); b.setSelectionRange(b.value.length,b.value.length);} },250); }
   if(t.id==='ccq'){ S.cc.q=t.value; clearTimeout(S._ct); S._ct=setTimeout(()=>{ S.cc.focus=true; desenhaConc(); },250); }
 });
-$('#fileInput').addEventListener('change',ev=>{ const f=[...ev.target.files]; ev.target.value=''; if(f.length) importarPdfs(f); });
+// aceita PDFs e também o arquivo de backup (.json) no mesmo lugar
+async function receberArquivos(lista){
+  const pdfs=lista.filter(x=>/pdf$/i.test(x.type)||/\.pdf$/i.test(x.name));
+  const bks=lista.filter(x=>/json/i.test(x.type)||/\.json(\.txt)?$/i.test(x.name)||/backup/i.test(x.name));
+  if(bks.length){ await importarBackup(await bks[0].text()); }
+  if(pdfs.length) await importarPdfs(pdfs);
+  if(!pdfs.length&&!bks.length) toast('Formato não reconhecido. Envie os PDFs (extrato, Listar Pedido por Data, Contas a Receber) ou o arquivo de backup .json.',7000);
+}
+$('#fileInput').addEventListener('change',ev=>{ const f=[...ev.target.files]; ev.target.value=''; if(f.length) receberArquivos(f); });
 document.addEventListener('dragover',ev=>{ if(ev.dataTransfer&&[...ev.dataTransfer.types].includes('Files')){ ev.preventDefault(); const z=$('[data-drop]'); if(z) z.classList.add('over'); } });
 document.addEventListener('dragleave',ev=>{ const z=ev.target.closest&&ev.target.closest('[data-drop]'); if(z) z.classList.remove('over'); });
 document.addEventListener('drop',ev=>{ if(!ev.dataTransfer||!ev.dataTransfer.files.length) return; ev.preventDefault(); const z=$('[data-drop]'); if(z) z.classList.remove('over');
-  const f=[...ev.dataTransfer.files].filter(x=>/pdf$/i.test(x.type)||/\.pdf$/i.test(x.name)); if(f.length) importarPdfs(f); else toast('Envie arquivos PDF.'); });
+  receberArquivos([...ev.dataTransfer.files]); });
 async function importarBackup(txt){
   let bk; try{ bk=JSON.parse(txt); }catch(e){ toast('Arquivo de backup inválido.'); return; }
   if(!bk||!bk.dados){ toast('Arquivo de backup inválido.'); return; }
@@ -1147,7 +1155,7 @@ async function importarBackup(txt){
   if(Sync.state==='err'){ toast('O backup não foi gravado por completo. Toque em "tentar de novo" no topo.',8000); return; }
   toast(`Backup importado: ${n} lançamento(s).`);
 }
-$('#bkInput').addEventListener('change',async ev=>{ const f=ev.target.files[0]; ev.target.value=''; if(f) importarBackup(await f.text()); });
+$('#bkInput').addEventListener('change',async ev=>{ const f=ev.target.files[0]; ev.target.value=''; if(f) receberArquivos([f]); });
 $('#dlg').addEventListener('close',()=>{ if(S._noRender) return; if(S.tab!=='importar'){ const k=guardarScroll(); render(); restaurarScroll(k); } });
 
 /* ============ início ============ */
