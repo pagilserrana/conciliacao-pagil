@@ -320,7 +320,7 @@ async function gh(caminho,opts={},cfg=GH){
   const headers={'Authorization':'Bearer '+cfg.token,'Accept':'application/vnd.github+json',...(opts.headers||{})};
   if(met!=='GET') headers['Content-Type']='application/json';
   try{ return await fetch(url,{...opts,headers}); }
-  catch(e){ throw new Error('sem resposta do GitHub (verifique a internet; bloqueadores de anúncio, antivírus ou rede da empresa podem estar bloqueando api.github.com)'); }
+  catch(e){ const err=new Error('sem resposta do GitHub'); err.rede=true; err.original=String(e&&e.message||e); throw err; }
 }
 async function erroGh(r){ let m=''; try{ m=(await r.json()).message||''; }catch(e){} return `${r.status} ${m}`.trim(); }
 async function listarDados(){
@@ -507,7 +507,16 @@ async function conectarGH(){
     if(lst.status===404){ const put=await gh('contents/dados/LEIA-ME.md',{method:'PUT',body:JSON.stringify({message:'Cria pasta de dados',content:b64enc('# Dados da conciliação\n\nArquivos gravados pelo app. Não edite à mão.\n'),branch:cfg.branch})},cfg);
       if(!put.ok){ telaConexao('Não consegui gravar no repositório: '+await erroGh(put)+'. Confira se o repositório tem pelo menos um commit (marque "Add a README" ao criar) e a permissão de escrita do token.',cfg); return; } }
     GH=cfg; localStorage.setItem(CFG_KEY,JSON.stringify(cfg)); location.reload();
-  }catch(e){ telaConexao('Não consegui falar com o GitHub: '+(e.message||e)+'.',cfg); }
+  }catch(e){
+    if(!e.rede){ telaConexao('Não consegui falar com o GitHub: '+(e.message||e)+'.',cfg); return; }
+    // diagnóstico: uma chamada simples, sem token, mostra se o problema é a rede ou algo que bloqueia só as chamadas com token
+    let simples='falhou';
+    try{ const r=await fetch('https://api.github.com/zen?_='+Date.now()); simples=r.ok?'ok':('status '+r.status); }catch(x){ simples='falhou'; }
+    const origem=location.protocol==='file:'?' Atenção: o app está aberto como arquivo do computador (file://). Abra pelo endereço https://pagilserrana.github.io/conciliacao-pagil/.':'';
+    telaConexao(simples==='ok'
+      ? 'O GitHub responde, mas a chamada com o token foi bloqueada neste navegador. Quase sempre é uma extensão (bloqueador de anúncios, antivírus no navegador) ou o antivírus do computador inspecionando HTTPS. Teste numa janela anônima sem extensões ou no celular. Detalhe técnico: '+e.original+'.'+origem
+      : 'Este aparelho não consegue acessar api.github.com (nem sem o token). Verifique a internet, o antivírus/firewall ou a rede da empresa; teste no celular com dados móveis. Detalhe técnico: '+e.original+'.'+origem, cfg);
+  }
 }
 
 
