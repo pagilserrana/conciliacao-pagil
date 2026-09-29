@@ -9,15 +9,6 @@
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
-<script>
-/* ====== COLE AQUI A CONFIGURAÇÃO DO SEU PROJETO FIREBASE ======
-   Console Firebase → Configurações do projeto → Seus apps → App da Web → Configuração.
-   Troque o null pelo objeto { apiKey: "...", authDomain: "...", projectId: "...", ... } */
-window.FIREBASE_CONFIG = null;
-</script>
 <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"></script>
 <style>
@@ -190,7 +181,7 @@ body.conectando header .period,body.conectando #quick,body.conectando nav.tabs,b
       <input type="date" id="pDe" aria-label="Data inicial"><span class="statusline">até</span><input type="date" id="pAte" aria-label="Data final">
     </div>
     <button class="sync pend" id="sync" data-act="sync" type="button">Abrindo planilha…</button>
-    <button class="btn" data-act="recarregar" title="Recarregar todos os dados">↻ Atualizar</button>
+    <button class="btn" data-act="recarregar" title="Buscar as últimas alterações no GitHub">↻ Atualizar</button>
     <button class="btn primary" data-act="pdf">Gerar relatório PDF</button>
   </div>
   <div class="top-in" style="padding-top:0"><div class="quick" id="quick"></div></div>
@@ -307,51 +298,97 @@ const isBalcao=s=>/BALCAO|CONSUMIDOR|NAO IDENTIFICADO|DIVERSOS/.test(norm(s));
 // coleções: entradas, vendas, receber — um documento por data (data do extrato, da venda ou do vencimento)
 const COLS=['entradas','vendas','receber'];
 const gkey=(col,x)=>col==='receber'?x.venc:x.date;
-/* ============ banco de dados: Firebase (Firestore) ============ */
-// Coleções: entradas / vendas / receber — um documento por dia ({date, items}).
-// Ajustes manuais (trocas de forma e conciliações): documento ajustes/manual, gravado campo a campo.
-// Tudo sincroniza em tempo real entre aparelhos e funciona offline (grava quando a internet voltar).
-function lerCfgFB(){ if(window.FIREBASE_CONFIG&&window.FIREBASE_CONFIG.apiKey) return window.FIREBASE_CONFIG; try{ return JSON.parse(localStorage.getItem('conc:fbcfg')||'null'); }catch(e){ return null; } }
-let FBCFG=lerCfgFB(), db=null, usuario=null;
-const MODO_TESTE=()=>localStorage.getItem('conc:teste')==='1';
-const USA_FB=()=>!!db;
-const unsubs=[];
+/* ============ banco de dados: repositório privado no GitHub ============ */
+// Cada tipo de lançamento fica num arquivo por mês: dados/vendas-2026-09.json, dados/entradas-2026-09.json…
+// Ajustes manuais (trocas de forma e conciliações) ficam em dados/ajustes.json.
+// Toda gravação vira um commit: o histórico do GitHub mostra quem mudou o quê e quando.
+const CFG_KEY='conc:github';
+function lerCfg(){ try{ return JSON.parse(localStorage.getItem(CFG_KEY)||'null'); }catch(e){ return null; } }
+let GH=lerCfg();
+const MODO_TESTE=()=>!!(GH&&GH.teste);
+const USA_GH=()=>!!(GH&&GH.token&&!GH.teste);
+const arqDe=(col,key)=>`${col}-${String(key).slice(0,7)}.json`;
+const SHA={}; // nome do arquivo -> sha conhecido
+function b64enc(str){ const bytes=new TextEncoder().encode(str); let bin=''; for(let i=0;i<bytes.length;i+=0x8000) bin+=String.fromCharCode.apply(null,bytes.subarray(i,i+0x8000)); return btoa(bin); }
+function b64dec(b64){ const bin=atob(b64.replace(/\n/g,'')); const bytes=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i); return new TextDecoder().decode(bytes); }
+async function gh(caminho,opts={},cfg=GH){
+  const r=await fetch(`https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/${caminho}`,{...opts,cache:'no-store',
+    headers:{'Authorization':'Bearer '+cfg.token,'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28',...(opts.headers||{})}});
+  return r;
+}
+async function erroGh(r){ let m=''; try{ m=(await r.json()).message||''; }catch(e){} return `${r.status} ${m}`.trim(); }
+async function listarDados(){
+  const r=await gh('contents/dados?ref='+encodeURIComponent(GH.branch||'main'));
+  if(r.status===404) return [];
+  if(!r.ok) throw new Error('GitHub: '+await erroGh(r));
+  return (await r.json()).filter(f=>f.type==='file'&&f.name.endsWith('.json'));
+}
+async function lerArquivo(nome){
+  const r=await gh(`contents/dados/${encodeURIComponent(nome)}?ref=${encodeURIComponent(GH.branch||'main')}`);
+  if(r.status===404) return {sha:null,json:null};
+  if(!r.ok) throw new Error('GitHub: '+await erroGh(r));
+  const meta=await r.json(); let txt;
+  if(meta.content&&meta.encoding==='base64') txt=b64dec(meta.content);
+  else { const rr=await gh(`contents/dados/${encodeURIComponent(nome)}?ref=${encodeURIComponent(GH.branch||'main')}`,{headers:{'Accept':'application/vnd.github.raw'}}); if(!rr.ok) throw new Error('GitHub: '+await erroGh(rr)); txt=await rr.text(); }
+  return {sha:meta.sha,json:txt?JSON.parse(txt):null};
+}
+async function escreverArquivo(nome,obj,sha,msg){
+  const body={message:msg||('Atualiza '+nome),content:b64enc(JSON.stringify(obj)),branch:GH.branch||'main'}; if(sha) body.sha=sha;
+  const r=await gh(`contents/dados/${encodeURIComponent(nome)}`,{method:'PUT',body:JSON.stringify(body)});
+  if(r.ok){ const j=await r.json(); SHA[nome]=j.content.sha; return {ok:true}; }
+  if(r.status===409||r.status===422) return {ok:false,conflito:true,erro:await erroGh(r)};
+  return {ok:false,erro:await erroGh(r)};
+}
+async function apagarArquivo(nome,sha){ const r=await gh(`contents/dados/${encodeURIComponent(nome)}`,{method:'DELETE',body:JSON.stringify({message:'Remove '+nome,sha,branch:GH.branch||'main'})}); if(r.ok) delete SHA[nome]; return r.ok; }
+
 const Store={mode:'local', inicial:null,
+  get label(){ return USA_GH()?'GitHub':'local'; },
   async init(){
-    if(!db){ this.mode='local'; return; }
-    this.mode='firebase';
-    const dados={entradas:[],vendas:[],receber:[]};
-    const snaps=await Promise.all(COLS.map(c=>db.collection(c).get()));
-    snaps.forEach((sn,i)=>sn.forEach(d=>{ const v=d.data(); if(v&&Array.isArray(v.items)) dados[COLS[i]].push(...v.items); }));
-    const aj=await db.doc('ajustes/manual').get();
-    this.inicial={dados,ajustes:aj.exists?(aj.data()||{}):{}};
+    this.mode=USA_GH()?'github':'local'; if(!USA_GH()) return;
+    const lista=await listarDados(); const dados={entradas:[],vendas:[],receber:[]}; let ajustes={formas:{},conc:{}};
+    const lidos=await Promise.all(lista.map(async f=>{ const a=await lerArquivo(f.name); return [f.name,a]; }));
+    for(const [nome,a] of lidos){ SHA[nome]=a.sha; if(!a.json) continue;
+      if(nome==='ajustes.json'){ ajustes={formas:a.json.formas||{},conc:a.json.conc||{}}; continue; }
+      const col=nome.split('-')[0]; if(dados[col]) dados[col].push(...(a.json.items||[])); }
+    this.inicial={dados,ajustes};
   },
   async loadAll(col){
-    if(db) return (this.inicial&&this.inicial.dados[col])||[];
+    if(USA_GH()) return (this.inicial&&this.inicial.dados[col])||[];
     const out=[]; try{ for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k&&k.startsWith(`conc:${col}:`)){ const v=JSON.parse(localStorage.getItem(k)); if(v&&v.items) out.push(...v.items);} } }catch(e){}
     return out; },
+  // grava os dias alterados; cada arquivo mensal é regravado inteiro, mesclando com o que outro aparelho gravou
   async putLote(lote){
-    const limpo=x=>{ const o={}; for(const k in x) if(k[0]!=='_') o[k]=x[k]; return JSON.parse(JSON.stringify(o)); };
-    const docs=lote.map(({col,key})=>({col,key,items:D[col].filter(x=>gkey(col,x)===key).map(limpo)}));
-    if(!db){ try{ docs.forEach(({col,key,items})=>{ if(items.length) localStorage.setItem(`conc:${col}:${key}`,JSON.stringify({date:key,items})); else localStorage.removeItem(`conc:${col}:${key}`); }); return true; }catch(e){ Sync.err='armazenamento cheio'; return false; } }
-    try{
-      for(let i=0;i<docs.length;i+=400){ const b=db.batch();
-        docs.slice(i,i+400).forEach(({col,key,items})=>{ const ref=db.collection(col).doc(key); if(items.length) b.set(ref,{date:key,items,atualizado:firebase.firestore.FieldValue.serverTimestamp(),por:usuario?usuario.email:''}); else b.delete(ref); });
-        await b.commit(); }
-      return true;
-    }catch(e){ Sync.err=traduzErro(e); return false; }
+    lote=JSON.parse(JSON.stringify(lote));
+    if(!USA_GH()){ try{ lote.forEach(({col,key,items})=>{ if(items.length) localStorage.setItem(`conc:${col}:${key}`,JSON.stringify({date:key,items})); else localStorage.removeItem(`conc:${col}:${key}`); }); return true; }catch(e){ Sync.err='armazenamento cheio'; return false; } }
+    const porArq={}; lote.forEach(l=>{ const n=arqDe(l.col,l.key); (porArq[n]=porArq[n]||{col:l.col,dias:new Set()}).dias.add(l.key); });
+    for(const nome in porArq){ const {col,dias}=porArq[nome]; let ok=false;
+      for(let t=0;t<4&&!ok;t++){
+        const mes=nome.slice(col.length+1,col.length+8);
+        const items=D[col].filter(x=>String(gkey(col,x)).slice(0,7)===mes).map(x=>{ const o={}; for(const k in x) if(k[0]!=='_') o[k]=x[k]; return o; });
+        const n=items.length;
+        let r;
+        if(!n&&SHA[nome]){ ok=await apagarArquivo(nome,SHA[nome]); if(ok) break; r={conflito:true}; }
+        else if(!n){ ok=true; break; }
+        else r=await escreverArquivo(nome,{items},SHA[nome],`${col} ${mes}: ${n} lançamento(s)`);
+        if(r&&r.ok){ ok=true; break; }
+        if(r&&r.conflito){ // outro aparelho gravou antes: traz a versão dele e mantém só os dias que este aparelho alterou
+          const rem=await lerArquivo(nome); SHA[nome]=rem.sha;
+          const remotos=((rem.json&&rem.json.items)||[]).filter(x=>!dias.has(gkey(col,x)));
+          const idsLocais=new Set(D[col].filter(x=>dias.has(gkey(col,x))).map(x=>x.id));
+          D[col]=D[col].filter(x=>String(gkey(col,x)).slice(0,7)!==mes||dias.has(gkey(col,x))).concat(remotos.filter(x=>!idsLocais.has(x.id)).map(x=>Object.assign(x,{col})));
+          reindex(); continue; }
+        Sync.err=(r&&r.erro)||'erro'; return false; }
+      if(!ok){ Sync.err=Sync.err||'conflito'; return false; } }
+    return true;
   }
 };
-function traduzErro(e){ const c=(e&&e.code)||''; if(/permission-denied/.test(c)) return 'sem permissão (confira as regras do Firestore e o e-mail autorizado)'; if(/unavailable/.test(c)) return 'sem conexão'; return (e&&e.message)||String(e); }
 const Sync={state:'ok',err:''};
 function syncUI(){ const el=document.getElementById('sync'); if(!el) return;
-  const off=db&&!navigator.onLine;
-  const m={ok:[db?'Salvo no Firebase':'Salvo neste aparelho (teste)','ok'],pend:[off?'Sem internet · será salvo ao reconectar':'Salvando…','pend'],err:['Não salvou · tentar de novo','err']}[Sync.state];
+  const m={ok:[USA_GH()?'Salvo no GitHub':'Salvo neste aparelho (teste)','ok'],pend:['Salvando…','pend'],err:['Não salvou · tentar de novo','err']}[Sync.state];
   el.textContent=(Sync.state==='ok'?'✓ ':Sync.state==='err'?'⚠ ':'')+m[0]; el.className='sync '+m[1]; el.title=Sync.err?('Erro: '+Sync.err):''; }
-window.addEventListener('online',syncUI); window.addEventListener('offline',syncUI);
 
-/* ============ ajustes manuais (ajustes/manual) ============ */
-const AJ={formas:{},conc:{}}; const pendAJ=new Set();
+/* ============ ajustes manuais (dados/ajustes.json) ============ */
+const AJ={formas:{},conc:{}}; const pendAJ=new Set(); let ajTimer=null, ajGravando=null;
 function aplicarAjustes(){
   for(const id in AJ.formas){ const x=IDX[id]; const a=AJ.formas[id]; if(!x||!a) continue;
     if(x.col==='receber') x.formaRec=a.f==='Não informada'?'':a.f;
@@ -359,28 +396,43 @@ function aplicarAjustes(){
   for(const id in AJ.conc){ const e=IDX[id]; const a=AJ.conc[id]; if(!e||!a||e.col!=='entradas') continue;
     e.st=a.st; e.links=(a.links||[]).filter(l=>IDX[l]); e.motivo=a.motivo||''; e.manual=true; e.auto=false; if(e.st==='ok'&&!e.links.length) e.st='ni'; }
 }
-function mesclarAjustes(rem){ let mudou=false;
+function mesclarAjustes(rem){ // o mais novo vence; o que está sendo gravado neste aparelho sempre vence
+  let mudou=false;
   for(const c of ['formas','conc']){ const R=(rem&&rem[c])||{}; for(const id in R){ if(pendAJ.has(c+':'+id)) continue; const L=AJ[c][id];
     if(!L||String(R[id].t||'')>String(L.t||'')){ if(JSON.stringify(L)!==JSON.stringify(R[id])){ AJ[c][id]=R[id]; mudou=true; } } } }
-  return mudou; }
-async function gravarAjuste(campo,id,valor){
-  AJ[campo][id]=valor; const pk=campo+':'+id; pendAJ.add(pk); Sync.state='pend'; syncUI();
-  let ok=false, erro='';
-  if(db){ try{ await db.doc('ajustes/manual').set({[campo]:{[id]:JSON.parse(JSON.stringify(valor))}},{merge:true}); ok=true; }catch(e){ erro=traduzErro(e); } }
-  else { try{ localStorage.setItem('conc:ajustes',JSON.stringify(AJ)); ok=true; }catch(e){ erro='armazenamento local indisponível'; } }
-  if(ok&&AJ[campo][id]===valor) pendAJ.delete(pk);
-  Sync.state=ok?(pendAJ.size||Object.values(dirty).some(x=>x.size)?'pend':'ok'):'err'; Sync.err=ok?'':erro; syncUI();
-  if(!ok) toast(`Não foi possível salvar (${erro}). Toque em "tentar de novo" no topo.`,8000);
-  return ok;
+  return mudou;
 }
-async function enviarAjustes(){ for(const k of [...pendAJ]){ const [c,id]=k.split(':'); await gravarAjuste(c,id,AJ[c][id]); } }
+function gravarAjuste(campo,id,valor){
+  AJ[campo][id]=valor; pendAJ.add(campo+':'+id); Sync.state='pend'; syncUI();
+  clearTimeout(ajTimer); ajTimer=setTimeout(enviarAjustes,500);
+  return Promise.resolve(true);
+}
+async function enviarAjustes(){
+  if(ajGravando) { await ajGravando; }
+  if(!pendAJ.size) return;
+  ajGravando=(async()=>{
+    const enviando=new Map([...pendAJ].map(k=>{ const [c,id]=k.split(':'); return [k,AJ[c][id]]; }));
+    let ok=false, erro='';
+    if(!USA_GH()){ try{ localStorage.setItem('conc:ajustes',JSON.stringify(AJ)); ok=true; }catch(e){ erro='armazenamento local indisponível'; } }
+    else for(let t=0;t<4&&!ok;t++){
+      const r=await escreverArquivo('ajustes.json',{formas:AJ.formas,conc:AJ.conc},SHA['ajustes.json'],`Ajustes manuais (${enviando.size})`);
+      if(r.ok){ ok=true; break; }
+      if(r.conflito){ const rem=await lerArquivo('ajustes.json'); SHA['ajustes.json']=rem.sha; if(mesclarAjustes(rem.json)){ reindex(); aplicarAjustes(); } continue; }
+      erro=r.erro; break; }
+    if(ok) enviando.forEach((v,k)=>{ const [c,id]=k.split(':'); if(AJ[c][id]===v) pendAJ.delete(k); });
+    Sync.state=ok?(pendAJ.size||Object.values(dirty).some(x=>x.size)?'pend':'ok'):'err'; Sync.err=ok?'':erro; syncUI();
+    if(!ok) toast(`Não foi possível salvar no GitHub (${erro}). Toque em "tentar de novo" no topo.`,8000);
+  })();
+  try{ await ajGravando; } finally { ajGravando=null; }
+  if(pendAJ.size&&Sync.state!=='err') { clearTimeout(ajTimer); ajTimer=setTimeout(enviarAjustes,300); }
+}
 async function carregarAjustes(){
-  if(db){ const a=(Store.inicial&&Store.inicial.ajustes)||{}; AJ.formas=a.formas||{}; AJ.conc=a.conc||{}; return; }
+  if(USA_GH()){ const a=(Store.inicial&&Store.inicial.ajustes)||{}; AJ.formas=a.formas||{}; AJ.conc=a.conc||{}; return; }
   try{ const d=JSON.parse(localStorage.getItem('conc:ajustes')||'null'); if(d){ AJ.formas=d.formas||{}; AJ.conc=d.conc||{}; } }catch(e){}
 }
 function salvarConc(e){ return gravarAjuste('conc',e.id,{st:e.st,links:e.links||[],motivo:e.motivo||'',t:new Date().toISOString()}); }
 const dirty={}; let saveTimer=null, flushing=null, flushAgain=false;
-function markDirty(col,key){ (dirty[col]=dirty[col]||new Set()).add(key); Sync.state='pend'; syncUI(); clearTimeout(saveTimer); saveTimer=setTimeout(flush,300); }
+function markDirty(col,key){ (dirty[col]=dirty[col]||new Set()).add(key); Sync.state='pend'; syncUI(); clearTimeout(saveTimer); saveTimer=setTimeout(flush,600); }
 async function flush(){
   if(flushing){ flushAgain=true; return flushing; }
   flushing=(async()=>{
@@ -388,84 +440,66 @@ async function flush(){
     do{ flushAgain=false;
       const jobs=[]; for(const col in dirty){ dirty[col].forEach(k=>jobs.push([col,k])); dirty[col].clear(); }
       if(!jobs.length) break;
-      const ok=await Store.putLote(jobs.map(([col,key])=>({col,key})));
+      const lote=jobs.map(([col,k])=>({col,key:k,items:[]}));
+      const ok=await Store.putLote(lote);
       if(!ok){ falhou=true; jobs.forEach(([col,k])=>(dirty[col]=dirty[col]||new Set()).add(k)); }
     } while(flushAgain&&!falhou);
-    Sync.state=falhou?'err':(Object.values(dirty).some(x=>x.size)||pendAJ.size?'pend':'ok'); if(!falhou) Sync.err=''; syncUI();
-    if(falhou) toast('Não foi possível salvar'+(Sync.err?` (${Sync.err})`:'')+'. Toque em "tentar de novo" no topo.',7000);
+    if(pendAJ.size&&!falhou) await enviarAjustes();
+    Sync.state=falhou?'err':(Object.values(dirty).some(x=>x.size)||pendAJ.size?'pend':Sync.state==='err'?'err':'ok'); if(!falhou&&Sync.state!=='err') Sync.err=''; syncUI();
+    if(falhou) toast('Não foi possível salvar no GitHub'+(Sync.err?` (${Sync.err})`:'')+'. Toque em "tentar de novo" no topo.',7000);
   })();
   try{ await flushing; } finally { flushing=null; }
   if(Object.values(dirty).some(x=>x.size)&&Sync.state!=='err') return flush();
 }
-document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='hidden') flush(); });
+document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='hidden'){ flush(); if(pendAJ.size) enviarAjustes(); } else verificarAtualizacao(); });
 window.addEventListener('pagehide',()=>{ flush(); });
 function touch(col,x){ markDirty(col,gkey(col,x)); }
 async function recarregarDaPlanilha(silencioso){
-  if(!db){ if(!silencioso) toast('Modo de teste: os dados estão neste navegador.'); return; }
-  await flush();
+  if(!USA_GH()){ if(!silencioso) toast('Modo de teste: os dados estão neste navegador.'); return; }
+  if(flushing||Object.values(dirty).some(x=>x.size)||pendAJ.size){ await flush(); await enviarAjustes(); }
   try{ await Store.init(); for(const col of COLS){ D[col]=await Store.loadAll(col); D[col].forEach(x=>x.col=col); } reindex(); await carregarAjustes(); aplicarAjustes();
-    Sync.state='ok'; syncUI(); refresh(); if(!silencioso) toast('Dados atualizados.'); }
-  catch(e){ toast('Não consegui ler o Firebase: '+traduzErro(e),7000); }
+    Sync.state='ok'; syncUI(); refresh(); if(!silencioso) toast('Dados atualizados do GitHub.'); }
+  catch(e){ toast('Não consegui ler o GitHub: '+(e.message||e),7000); }
 }
-// tempo real: o que outro aparelho grava aparece aqui sozinho
-let rtTimer=null;
-function agendarRefreshRT(){ clearTimeout(rtTimer); rtTimer=setTimeout(()=>{ reindex(); aplicarAjustes(); if(!$('#dlg').open||S.dlgKind==='det') refresh(); },150); }
-function ouvirTempoReal(){
-  if(!db) return;
-  COLS.forEach(col=>{ let primeira=true;
-    unsubs.push(db.collection(col).onSnapshot(sn=>{ if(primeira){ primeira=false; return; }
-      let mudou=false;
-      sn.docChanges().forEach(ch=>{ if(ch.doc.metadata.hasPendingWrites) return; const key=ch.doc.id; if(dirty[col]&&dirty[col].has(key)) return;
-        const novos=ch.type==='removed'?[]:((ch.doc.data()||{}).items||[]);
-        const atual=D[col].filter(x=>gkey(col,x)===key);
-        if(JSON.stringify(atual.map(x=>x.id).sort())===JSON.stringify(novos.map(x=>x.id).sort())&&ch.type==='modified'){
-          // mesmos lançamentos: atualiza campos vindos do outro aparelho
-          const byId=new Map(novos.map(x=>[x.id,x])); atual.forEach(x=>{ const n=byId.get(x.id); if(n&&JSON.stringify(n)!==JSON.stringify(Object.fromEntries(Object.entries(x).filter(([k])=>k[0]!=='_')))){ Object.assign(x,n,{col}); mudou=true; } });
-        } else { D[col]=D[col].filter(x=>gkey(col,x)!==key).concat(novos.map(x=>Object.assign(x,{col}))); mudou=true; } });
-      if(mudou) agendarRefreshRT(); },()=>{}));
-  });
-  unsubs.push(db.doc('ajustes/manual').onSnapshot(sn=>{ if(sn.metadata.hasPendingWrites||!sn.exists) return; if(mesclarAjustes(sn.data())) agendarRefreshRT(); },()=>{}));
+let verificando=false;
+async function verificarAtualizacao(){ // compara as versões dos arquivos no GitHub com as que este aparelho tem
+  if(!USA_GH()||verificando||document.visibilityState!=='visible') return; if(flushing||Object.values(dirty).some(x=>x.size)||pendAJ.size||$('#dlg').open) return;
+  verificando=true;
+  try{ const lista=await listarDados(); const mudou=lista.some(f=>SHA[f.name]!==f.sha)||Object.keys(SHA).some(n=>SHA[n]&&!lista.some(f=>f.name===n));
+    if(mudou) await recarregarDaPlanilha(true); }catch(e){}
+  verificando=false;
 }
+setInterval(verificarAtualizacao,60000);
 
-/* ============ configuração e login ============ */
-function telaConfig(msg){
+/* ============ conexão com o GitHub ============ */
+function telaConexao(msg,digitado){
+  const c=digitado||GH||{};
   document.body.classList.add('conectando');
-  $('#app').innerHTML=`<h1 class="page">Conectar ao Firebase</h1>
-  <p class="lede">Cole abaixo a configuração do app web do seu projeto Firebase (Console → Configurações do projeto → Seus apps → SDK: Configuração). O melhor é colar dentro do index.html, no bloco FIREBASE_CONFIG, para valer em todos os aparelhos.</p>
+  $('#app').innerHTML=`<h1 class="page">Conectar ao GitHub</h1>
+  <p class="lede">Os dados ficam num repositório <b>privado</b> no seu GitHub. O token fica guardado só neste aparelho e nunca vai para o repositório.</p>
   ${msg?`<div class="panel" style="border-color:var(--red);color:var(--red);margin-bottom:14px">${esc(msg)}</div>`:''}
-  <div class="panel"><textarea id="fbcfg" class="search" style="width:100%;min-height:180px;font-family:monospace;font-size:13px" placeholder='const firebaseConfig = {\n  apiKey: "...",\n  authDomain: "...",\n  projectId: "...",\n  ...\n};'></textarea>
-  <div class="toolbar" style="margin-top:10px"><button class="btn primary" data-act="fbsalvarcfg">Salvar e conectar</button><button class="btn" data-act="fbteste">Usar sem Firebase (teste neste navegador)</button></div></div>`;
+  <div class="panel"><div class="map" style="grid-template-columns:1fr 1fr">
+    <label>Usuário ou organização do GitHub<input id="ghOwner" class="search" value="${esc(c.owner||'')}" placeholder="ex.: hugo-pagil" autocomplete="off"></label>
+    <label>Repositório de dados (privado)<input id="ghRepo" class="search" value="${esc(c.repo||'conciliacao-dados')}" autocomplete="off"></label>
+    <label>Branch<input id="ghBranch" class="search" value="${esc(c.branch||'main')}" autocomplete="off"></label>
+    <label>Token de acesso (fine-grained)<input id="ghToken" class="search" type="password" value="${esc(c.token||'')}" placeholder="github_pat_…" autocomplete="off"></label>
+  </div>
+  <div class="toolbar"><button class="btn primary" data-act="ghconectar">Testar e conectar</button><button class="btn" data-act="ghteste">Usar sem GitHub (teste neste navegador)</button>${USA_GH()?'<button class="btn danger" data-act="ghsair">Desconectar este aparelho</button>':''}</div>
+  <p class="statusline">O token precisa de acesso só ao repositório de dados, com a permissão <b>Contents: Read and write</b>.</p></div>`;
 }
-function telaLogin(msg){
-  document.body.classList.add('conectando');
-  $('#app').innerHTML=`<h1 class="page">Entrar</h1><p class="lede">Entre com a conta Google autorizada nas regras do Firestore.</p>
-  ${msg?`<div class="panel" style="border-color:var(--red);color:var(--red);margin-bottom:14px">${esc(msg)}</div>`:''}
-  <div class="toolbar"><button class="btn primary" data-act="fblogin">Entrar com Google</button>${FBCFG&&!window.FIREBASE_CONFIG?'<button class="btn" data-act="fbcfgnovo">Trocar configuração</button>':''}</div>`;
-}
-function lerConfigColada(txt){
-  const m=txt.match(/\{[\s\S]*\}/); if(!m) throw new Error('Não encontrei o bloco { ... }');
-  const obj=Function('"use strict";return ('+m[0]+')')(); if(!obj.apiKey||!obj.projectId) throw new Error('Faltam apiKey ou projectId');
-  return obj;
-}
-async function iniciarFirebase(){
-  if(MODO_TESTE()) return 'teste';
-  if(!FBCFG) return 'config';
-  if(!window.firebase) throw new Error('A biblioteca do Firebase não carregou. Verifique a internet e recarregue.');
-  if(!firebase.apps.length) firebase.initializeApp(FBCFG);
-  const auth=firebase.auth();
-  try{ await auth.getRedirectResult(); }catch(e){ console.warn(e); }
-  usuario=await new Promise(res=>{ const u=auth.onAuthStateChanged(x=>{ u(); res(x); }); });
-  if(!usuario) return 'login';
-  const fs=firebase.firestore();
-  try{ await fs.enablePersistence({synchronizeTabs:true}); }catch(e){}
-  db=fs; return 'ok';
-}
-async function loginGoogle(){
-  const auth=firebase.auth(); const prov=new firebase.auth.GoogleAuthProvider();
-  try{ await auth.signInWithPopup(prov); location.reload(); }
-  catch(e){ if(/popup-blocked|popup-closed|operation-not-supported|cancelled/.test(e.code||'')){ try{ await auth.signInWithRedirect(prov); }catch(e2){ telaLogin(traduzErro(e2)); } }
-    else if(/unauthorized-domain/.test(e.code||'')) telaLogin('Este endereço não está autorizado. No Firebase: Authentication → Configurações → Domínios autorizados → adicione '+location.hostname+'.');
-    else telaLogin(traduzErro(e)); }
+async function conectarGH(){
+  const cfg={owner:$('#ghOwner').value.trim(),repo:$('#ghRepo').value.trim(),branch:$('#ghBranch').value.trim()||'main',token:$('#ghToken').value.trim()};
+  if(!cfg.owner||!cfg.repo||!cfg.token){ toast('Preencha usuário, repositório e token.'); return; }
+  toast('Testando a conexão…',10000);
+  try{ const r=await gh('',{},cfg); if(!r.ok){ telaConexao(r.status===404?'Repositório não encontrado ou o token não tem acesso a ele.':r.status===401?'Token inválido ou expirado.':'GitHub respondeu: '+await erroGh(r),cfg); return; }
+    const info=await r.json(); if(info.permissions&&info.permissions.push===false){ telaConexao('O token só tem leitura. Dê a permissão Contents: Read and write.',cfg); return; }
+    if(!info.private&&!confirm('Atenção: este repositório é PÚBLICO e qualquer pessoa verá os dados financeiros. Continuar mesmo assim?')) return;
+    // repositório vazio: cria a pasta de dados
+    const lst=await gh('contents/dados?ref='+encodeURIComponent(cfg.branch),{},cfg);
+    if(lst.status===404){ const put=await gh('contents/dados/LEIA-ME.md',{method:'PUT',body:JSON.stringify({message:'Cria pasta de dados',content:b64enc('# Dados da conciliação\n\nArquivos gravados pelo app. Não edite à mão.\n'),branch:cfg.branch})},cfg);
+      if(!put.ok){ telaConexao('Não consegui gravar no repositório: '+await erroGh(put)+'. Confira se o repositório tem pelo menos um commit (marque "Add a README" ao criar) e a permissão de escrita do token.',cfg); return; } }
+    GH=cfg; localStorage.setItem(CFG_KEY,JSON.stringify(cfg)); location.reload();
+  }catch(e){ telaConexao('Não consegui falar com o GitHub: '+(e.message||e),cfg); }
 }
 
 
@@ -980,8 +1014,8 @@ function vImportar(){
     <div class="panel"><h3>Vendas</h3><p>CGI → Listar Pedido por Data (ou o PDF de um pedido). Pix e transferência são cruzados com o banco; parcelas a prazo futuras entram como recebimentos previstos.</p><p class="statusline">${q('vendas')}</p></div>
     <div class="panel"><h3>Recebimentos</h3><p>CGI → Contas a Receber. Em aberto viram previstos ou atrasados; títulos já baixados são ligados ao Pix que os pagou.</p><p class="statusline">${q('receber')}</p></div>
   </div>
-  <section class="block"><h2>Dados</h2><p class="sub">${db?`Tudo fica gravado no Firebase (projeto <b>${esc(FBCFG.projectId)}</b>) e aparece na hora em todos os aparelhos. Conectado como <b>${esc(usuario&&usuario.email||'')}</b>.`:'Modo de teste: os dados ficam só neste navegador.'}</p>
-    <div class="toolbar"><button class="btn" data-act="recarregar">Recarregar dados</button>${db?'<button class="btn" data-act="fbsair">Sair da conta</button>':'<button class="btn" data-act="fbsair">Conectar ao Firebase</button>'}<button class="btn" data-act="auto">Refazer conciliação automática</button><button class="btn" data-act="bkexp">Exportar backup</button><button class="btn" data-act="bkimp">Importar backup</button><button class="btn danger" data-act="zerar">Apagar todos os dados</button></div></section>`;
+  <section class="block"><h2>Dados</h2><p class="sub">${USA_GH()?`Tudo fica gravado no repositório privado <b>${esc(GH.owner)}/${esc(GH.repo)}</b>, pasta "dados". Cada alteração vira um commit no histórico do GitHub.`:'Modo de teste: os dados ficam só neste navegador.'}</p>
+    <div class="toolbar"><button class="btn" data-act="recarregar">Atualizar dados do GitHub</button><button class="btn" data-act="ghcfg">Conexão com o GitHub</button><button class="btn" data-act="auto">Refazer conciliação automática</button><button class="btn" data-act="bkexp">Exportar backup</button><button class="btn" data-act="bkimp">Importar backup</button><button class="btn danger" data-act="zerar">Apagar todos os dados</button></div></section>`;
 }
 
 /* ============ relatório PDF ============ */
@@ -1066,12 +1100,11 @@ document.addEventListener('click',async ev=>{
   switch(a){
     case 'quick': setQuick(t.dataset.q); render(); break;
     case 'sync': { if(Sync.state==='err'){ Sync.state='pend'; syncUI(); await flush(); await enviarAjustes();
-        toast(Sync.state==='ok'?'Alterações salvas.':`Ainda não salvou (${Sync.err}).`); } else toast(db?'Tudo salvo no Firebase.':'Modo de teste: dados só neste navegador.'); break; }
-    case 'fbsalvarcfg': { try{ const c=lerConfigColada($('#fbcfg').value); localStorage.setItem('conc:fbcfg',JSON.stringify(c)); localStorage.removeItem('conc:teste'); location.reload(); }catch(e){ telaConfig('Configuração inválida: '+e.message); } break; }
-    case 'fbteste': localStorage.setItem('conc:teste','1'); location.reload(); break;
-    case 'fblogin': loginGoogle(); break;
-    case 'fbcfgnovo': localStorage.removeItem('conc:fbcfg'); location.reload(); break;
-    case 'fbsair': if(confirm('Sair desta conta neste aparelho?')){ unsubs.forEach(u=>u()); if(window.firebase&&firebase.apps.length) await firebase.auth().signOut(); localStorage.removeItem('conc:teste'); location.reload(); } break;
+        toast(Sync.state==='ok'?'Alterações salvas no GitHub.':`Ainda não salvou (${Sync.err}).`); } else toast(USA_GH()?'Tudo salvo no GitHub.':'Modo de teste: dados só neste navegador.'); break; }
+    case 'ghcfg': telaConexao(); break;
+    case 'ghconectar': conectarGH(); break;
+    case 'ghteste': GH={teste:true}; localStorage.setItem(CFG_KEY,JSON.stringify(GH)); location.reload(); break;
+    case 'ghsair': if(confirm('Desconectar este aparelho? Os dados continuam no GitHub.')){ localStorage.removeItem(CFG_KEY); location.reload(); } break;
     case 'dprev': S.dia=addDays(S.dia,-1); S.selE=null; render(); break;
     case 'dnext': S.dia=addDays(S.dia,1); S.selE=null; render(); break;
     case 'dsel': { if(!id||S.selE===id){ S.selE=null; } else { S.selE=id; const e=IDX[id]; S.selItens=new Set(e.links||[]); S.dq=''; } refresh(); break; }
@@ -1101,8 +1134,8 @@ document.addEventListener('click',async ev=>{
     case 'pdf': { if(!window.jspdf){ toast('O gerador de PDF não carregou. Recarregue a página.'); break; } if(!D.entradas.length&&!D.vendas.length&&!D.receber.length){ toast('Importe os dados antes de gerar o relatório.'); break; }
       try{ const d=gerarPdf(); await baixar(S.de===S.ate?`conciliacao-${S.de}.pdf`:`conciliacao-${S.de}-a-${S.ate}.pdf`,d.output('blob'),'application/pdf'); }catch(e){ console.error(e); toast('Não consegui gerar o PDF.'); } break; }
     case 'zerar': { if(!confirm('Apagar todas as entradas, vendas, recebimentos e conciliações? Não dá para desfazer.')) break;
-      for(const col of COLS){ D[col]=[]; } for(const c in dirty) dirty[c].clear(); if(!db){ for(let i=localStorage.length-1;i>=0;i--){ const k=localStorage.key(i); if(k&&k.startsWith('conc:')) localStorage.removeItem(k); } }
-      AJ.formas={}; AJ.conc={}; if(db){ try{ for(const col of COLS){ const sn=await db.collection(col).get(); const refs=sn.docs.map(d=>d.ref); for(let i=0;i<refs.length;i+=400){ const b=db.batch(); refs.slice(i,i+400).forEach(r=>b.delete(r)); await b.commit(); } } await db.doc('ajustes/manual').delete(); }catch(e){ toast('Não consegui limpar o Firebase: '+traduzErro(e)); break; } } else { try{ localStorage.removeItem('conc:ajustes'); }catch(e){} } render(); toast('Todos os dados foram apagados.'); break; }
+      for(const col of COLS){ D[col]=[]; } for(const c in dirty) dirty[c].clear(); if(!USA_GH()){ for(let i=localStorage.length-1;i>=0;i--){ const k=localStorage.key(i); if(k&&k.startsWith('conc:')) localStorage.removeItem(k); } }
+      AJ.formas={}; AJ.conc={}; if(USA_GH()){ try{ for(const n of Object.keys(SHA)){ if(SHA[n]) await apagarArquivo(n,SHA[n]); } }catch(e){ toast('Não consegui limpar o GitHub: '+e); break; } } else { try{ localStorage.removeItem('conc:ajustes'); }catch(e){} } render(); toast('Todos os dados foram apagados.'); break; }
     case 'recarregar': recarregarDaPlanilha(false); break;
     case 'bkexp': { const bk={app:'conciliacao-pagil',versao:1,gerado:new Date().toISOString(),dados:{entradas:D.entradas,vendas:D.vendas,receber:D.receber},ajustes:AJ};
       const limpo=JSON.stringify(bk,(k,v)=>k&&k[0]==='_'?undefined:v); await baixar(`backup-conciliacao-${HOJE}.json`,limpo,'application/json'); break; }
@@ -1145,13 +1178,12 @@ $('#dlg').addEventListener('close',()=>{ if(S._noRender) return; if(S.tab!=='imp
 /* ============ início ============ */
 (async()=>{
   S.dia=HOJE; setQuick('mes'); render();
-  let est; try{ est=await iniciarFirebase(); }catch(e){ telaConfig(e.message); return; }
-  if(est==='config'){ telaConfig(); return; } if(est==='login'){ telaLogin(); return; }
-  try{ await Store.init(); }catch(e){ telaLogin('Não consegui ler os dados: '+traduzErro(e)); return; }
+  if(!GH){ telaConexao(); return; }
+  try{ await Store.init(); }catch(e){ telaConexao('Não consegui ler os dados: '+(e.message||e)); return; }
   for(const col of COLS){ D[col]=await Store.loadAll(col); D[col].forEach(x=>x.col=col); }
   reindex(); await carregarAjustes(); aplicarAjustes(); syncUI();
   if(D.entradas.length||D.vendas.length){ const ds=[...D.entradas.map(e=>e.date),...D.vendas.map(v=>v.date)].filter(d=>d<=HOJE).sort(); if(ds.length&&!ds.includes(HOJE)) S.dia=ds[ds.length-1]; setQuick('mes'); if(!ds.some(d=>d>=S.de)) { setQuick('tudo'); } }
-  render(); ouvirTempoReal();
+  render();
 })();
 
 </script>
