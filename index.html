@@ -568,7 +568,7 @@ function calc(){
   const previstos=abertos.filter(r=>r.venc>=HOJE);
   const recebidosTit=receberAll.filter(r=>(LI[r.id]&&LI[r.id].st==='ok'&&inP(LI[r.id].e.date))||(r.baixado&&inP(r.dataBaixa)));
   const vendasNaoEntrou=vendas.filter(v=>v._st==='nao'&&v.date<HOJE);
-  const baixaNaoEntrou=D.receber.filter(r=>r.baixado&&inP(r.dataBaixa)&&!LI[r.id]&&['Pix','Transferência','Boleto'].includes(r.formaRec)&&coberto(r.dataBaixa));
+  const baixaNaoEntrou=[]; // título baixado com forma escolhida à mão conta como identificado
   const byst=st=>entradas.filter(e=>e.st===st);
   return {LI,vendas,entradas,porForma,recebido,abertos,atrasados,previstos,recebidosTit,vendasNaoEntrou,baixaNaoEntrou,
     ok:byst('ok'),conf:byst('conf'),ni:byst('ni'),out:byst('out'),
@@ -578,7 +578,7 @@ function calc(){
 /* ============ descrições para listas ============ */
 const ST={ok:['ok','🟢 Conciliado'],conf:['conf','🟡 Conferir'],ni:['ni','🔴 Não identificado'],out:['out','Outra entrada'],
   caixa:['neu','Caixa (dinheiro)'],maq:['neu','Maquininha'],prazo:['neu','A prazo'],nao:['ni','🔴 Não entrou no banco'],
-  semext:['neu','Sem extrato do dia'],aberto:['neu','Previsto'],atraso:['ni','🔴 Atrasado'],recebido:['ok','🟢 Recebido'],baixado:['conf','🟡 Forma não informada']};
+  semext:['neu','Sem extrato do dia'],aberto:['neu','Previsto'],atraso:['ni','🔴 Atrasado'],identificado:['ok','🟢 Identificado'],recebido:['ok','🟢 Recebido'],baixado:['conf','🟡 Forma não informada']};
 const stHtml=k=>{ const s=ST[k]||['neu',k]; return `<span class="st ${s[0]}">${esc(s[1])}</span>`; };
 function refDe(id){ const x=IDX[id]; if(!x) return 'lançamento removido'; return x.col==='vendas'?`Venda ${x.doc||'—'}`:`Título ${x.doc||'—'}`; }
 function clienteDaEntrada(e){ if(e.links&&e.links.length){ const n=[...new Set(e.links.map(id=>IDX[id]&&IDX[id].cliente).filter(Boolean))]; if(n.length) return n.join(', '); } return e.pagador||'Não identificado'; }
@@ -588,9 +588,9 @@ function linhaVenda(v){ return {cliente:v.cliente,sub:v.formaTxt||v.forma,valor:
   act:(v.forma==='Pix'||v.forma==='Transferência'||v.forma==='Outros')?`data-act="alvo" data-id="${v.id}"`:'',forma:v.forma,
   extra:v._e?`Entrou ${brs(v._e.date)} · ${v._e.pagador||v._e.desc}`:'',item:v}; }
 function linhaItem(i,LI){ return i.k==='venda'?linhaVenda(i.x):i.k==='rec'?Object.assign(linhaReceber(i.x,LI),{data:i.x.dataBaixa}):linhaEntrada(i.x); }
-function linhaReceber(r,LI){ const l=LI[r.id]; const st=l&&l.st==='ok'?'recebido':r.baixado?(!r.formaRec?'baixado':BANCO.includes(r.formaRec)?'nao':'recebido'):r.venc<HOJE?'atraso':'aberto';
+function linhaReceber(r,LI){ const l=LI[r.id]; const st=l&&l.st==='ok'?'recebido':r.baixado?(!r.formaRec?'baixado':'identificado'):r.venc<HOJE?'atraso':'aberto';
   return {cliente:r.cliente,sub:(r.pedido?'Pedido '+r.pedido:'')+(r.juros?` · inclui juros ${money(r.juros)}`:''),valor:r.valor,data:r.venc,doc:'Título '+(r.doc||'—'),st,act:`data-act="alvo" data-id="${r.id}"`,item:r.baixado?r:null,
-    extra:l?`${l.st==='ok'?'Pago':'Possível pagamento'} em ${brs(l.e.date)} · ${l.e.pagador||''}`:r.baixado?(!r.formaRec?`Baixado em ${brs(r.dataBaixa)} · escolha a forma de recebimento`:BANCO.includes(r.formaRec)&&!l?`Baixado em ${brs(r.dataBaixa)} · ${r.formaRec} ainda sem entrada no banco`:`Baixado em ${brs(r.dataBaixa)} · recebido em ${r.formaRec.toLowerCase()}`):(r.venc<HOJE?`${dayDiff(r.venc,HOJE)} dia(s) de atraso`:(r.venc===HOJE?'vence hoje':`vence em ${dayDiff(HOJE,r.venc)} dia(s)`))}; }
+    extra:l?`${l.st==='ok'?'Pago':'Possível pagamento'} em ${brs(l.e.date)} · ${l.e.pagador||''}`:r.baixado?(!r.formaRec?`Baixado em ${brs(r.dataBaixa)} · escolha a forma de recebimento`:`Baixado em ${brs(r.dataBaixa)} · recebido em ${r.formaRec.toLowerCase()}`):(r.venc<HOJE?`${dayDiff(r.venc,HOJE)} dia(s) de atraso`:(r.venc===HOJE?'vence hoje':`vence em ${dayDiff(HOJE,r.venc)} dia(s)`))}; }
 
 /* ============ renderização ============ */
 /* ---- atualização imediata da tela (mantém rolagem, janela aberta e destaca o que mudou) ---- */
@@ -643,7 +643,7 @@ function vPainel(C){
   const barras=FORMAS_R.filter(f=>C.porForma[f].total).map(f=>{ const it=C.porForma[f].itens; const tot=C.porForma[f].total;
     const segs=f===BSB?[[tot,'var(--ink-2)']]:f==='Dinheiro'||(f==='Cartão'&&!it.some(i=>i.k==='entrada'))?[[tot,'var(--blue)']]:[
       [sum(it.filter(i=>i.k==='entrada'&&i.x.st==='ok').map(i=>i.x)),'var(--green)'],[sum(it.filter(i=>i.k==='entrada'&&i.x.st==='conf').map(i=>i.x)),'var(--amber)'],
-      [sum(it.filter(i=>i.k==='entrada'&&i.x.st==='ni').map(i=>i.x)),'var(--red)'],[sum(it.filter(i=>i.k==='rec'&&BANCO.includes(i.x.formaRec)).map(i=>i.x)),'var(--red)'],[sum(it.filter(i=>i.k==='venda'||(i.k==='rec'&&!BANCO.includes(i.x.formaRec))).map(i=>i.x)),'var(--blue)']];
+      [sum(it.filter(i=>i.k==='entrada'&&i.x.st==='ni').map(i=>i.x)),'var(--red)'],[sum(it.filter(i=>i.k==='venda'||i.k==='rec').map(i=>i.x)),'var(--blue)']];
     return `<button class="bar" data-act="det" data-k="forma" data-f="${f}"><span class="nm">${f}<span class="small">${it.length} lançamento(s)</span></span>
       <span class="tr" style="width:${Math.max(4,100*tot/maxF)}%">${segs.filter(s=>s[0]).map(s=>`<span style="width:${100*s[0]/tot}%;background:${s[1]}"></span>`).join('')}</span><span class="vl">${money(tot)}</span></button>`; }).join('');
   return `<h1 class="page">${periodo}</h1>
@@ -697,7 +697,8 @@ function abrirDet(k,f){
   if(k==='vendas'){ titulo='Vendas'; sub='Toque numa forma para filtrar.'; rows=C.vendas.map(linhaVenda); grupos=[...new Set(C.vendas.map(v=>v.forma))]; }
   else if(k==='recebido'){ titulo='Recebimentos por forma'; sub='Pix, transferência, boleto e depósito pelo extrato; dinheiro e cartão pelas vendas.';
     FORMAS_R.forEach(fm=>C.porForma[fm].itens.forEach(i=>rows.push(Object.assign(linhaItem(i,LI),{forma:fm})))); grupos=FORMAS_R.filter(fm=>C.porForma[fm].total); }
-  else if(k==='forma'){ titulo=f; sub='Todos os lançamentos que formam este total.'; rows=C.porForma[f].itens.map(i=>linhaItem(i,LI)); if(f===BSB) sub='Títulos baixados no período sem forma de recebimento informada. Escolha a forma na coluna Forma: o título sai daqui e vai para a forma escolhida (Dinheiro, Cartão, Pix…).'; }
+  else if(k==='forma'){ const fs=String(f).split('|').filter(x=>C.porForma[x]); titulo=fs.length>1?fs.join(' / '):f; sub='Todos os lançamentos que formam este total.';
+    rows=fs.flatMap(fm=>C.porForma[fm].itens.map(i=>Object.assign(linhaItem(i,LI),{forma:fm}))); if(fs.length>1) grupos=fs.filter(fm=>C.porForma[fm].itens.length); if(f===BSB) sub='Títulos baixados no período sem forma de recebimento informada. Escolha a forma na coluna Forma: o título sai daqui e vai para a forma escolhida (Dinheiro, Cartão, Pix…).'; }
   else if(k==='entradas'){ titulo='Entradas no banco'; rows=C.entradas.filter(e=>e.st!=='out').map(linhaEntrada); grupos=[...new Set(C.entradas.map(e=>e.forma))]; }
   else if(['ok','conf','ni'].includes(k)){ titulo=ST[k][1]; sub=k==='ok'?'Entradas com venda ou título identificado.':k==='conf'?'Existe uma possibilidade, mas precisa da sua confirmação. Toque para conferir.':'Dinheiro que entrou sem venda ou título correspondente. Toque para escolher manualmente.';
     rows=C[k].map(linhaEntrada); grupos=[...new Set(C[k].map(e=>e.forma))]; }
@@ -795,7 +796,7 @@ function vDia(C){
   const faltam=pdfs.filter(p=>!p[1]).length;
   // pendências do dia do lado do sistema
   const vendasPend=vD.filter(v=>(v.forma==='Pix'||v.forma==='Transferência'||v.forma==='Outros')&&!LI[v.id]);
-  const baixasPend=rD.filter(r=>!LI[r.id]&&!CAIXA.includes(r.formaRec));
+  const baixasPend=rD.filter(r=>!LI[r.id]&&!r.formaRec);
   const ents=eD.slice().sort((a,b)=>({ni:0,conf:1,ok:2,out:3}[a.st]-{ni:0,conf:1,ok:2,out:3}[b.st])||b.valor-a.valor);
   const selE=S.selE&&IDX[S.selE]&&IDX[S.selE].date===d?IDX[S.selE]:null;
   const kpi=(l,v,cls,k,f)=>`<button class="mini ${cls}" data-act="det" data-k="${k}" ${f?`data-f="${f}"`:''}><span>${l}</span><b>${v}</b></button>`;
@@ -808,10 +809,10 @@ function vDia(C){
       <div class="linkbar"><span class="sumline">Selecionado <b>${money(tot)}</b> · diferença <b class="${dif===0?'ok':'bad'}">${money(dif)}</b></span><span class="sp"></span>
         <button class="btn" data-act="dout">Não é venda</button><button class="btn primary" data-act="dlink" ${sel.size?'':'disabled'}>Vincular</button></div>`;
   } else {
-    const it=[...vendasPend.map(v=>({x:v,t:'Venda sem Pix no banco'})),...baixasPend.map(r=>({x:r,t:'Baixa sem entrada no banco'}))];
+    const it=[...vendasPend.map(v=>({x:v,t:'Venda sem Pix no banco'})),...baixasPend.map(r=>({x:r,t:'Baixa sem forma informada'}))];
     direita=`<div class="colh"><div><b>O sistema diz que recebeu</b><span class="small">Vendas no Pix/transferência e títulos baixados no dia ainda sem entrada no banco. Toque para procurar o crédito.</span></div></div>
       <div class="lista">${it.length?it.map(o=>`<div class="cand" data-act="alvo" data-id="${o.x.id}" tabindex="0"><span class="dot ni"></span><span><b>${esc(o.x.cliente)}</b><span class="small">${o.t} · ${esc(descAlvo(o.x))}</span></span><span class="v">${money(o.x.valor)}<span class="fwrap">${formaCell(o.x)}</span></span></div>`).join(''):'<div class="empty">Nada pendente do lado do sistema.</div>'}</div>
-      <p class="statusline" style="margin:8px 0 0">Recebeu em dinheiro ou cartão? Troque a forma aqui e o item sai da lista.</p>`;
+      <p class="statusline" style="margin:8px 0 0">Escolha a forma de recebimento de um título (Dinheiro, Cartão, Boleto, Pix…) e ele sai desta lista e vai para a forma escolhida.</p>`;
   }
   const esquerda=`<div class="colh"><div><b>Entrou no banco</b><span class="small">Toque numa entrada para dizer quem pagou.</span></div></div>
     <div class="lista">${ents.length?ents.map(e=>`<div class="cand ent ${selE&&selE.id===e.id?'sel':''}" data-act="dsel" data-id="${e.id}" tabindex="0"><span class="dot ${e.st}"></span>
@@ -827,7 +828,7 @@ function vDia(C){
     <section class="block"><h2>2. Resumo do dia</h2><div class="minis">
       ${kpi('Vendas',money(C.tVendas),'','vendas')}${kpi('Entrou no banco',money(C.tEntradas),'','entradas')}${kpi('🟢 Conciliado',money(sum(C.ok)),'g','ok')}
       ${kpi('🟡 Conferir',money(sum(C.conf)),'a','conf')}${kpi('🔴 Não identificado',money(sum(C.ni)),'r','ni')}${kpi('Baixas sem forma',money(C.porForma[BSB].total),C.porForma[BSB].total?'a':'','forma',BSB)}
-      ${kpi('Dinheiro (caixa)',money(C.porForma['Dinheiro'].total),'','forma','Dinheiro')}${kpi('Cartão (maquininha)',money(C.porForma['Cartão'].total),'','forma','Cartão')}${kpi('Pix',money(C.porForma['Pix'].total),'','forma','Pix')}${kpi('Transferência / boleto',money(C.porForma['Transferência'].total+C.porForma['Boleto'].total+C.porForma['Depósito'].total),'','forma','Transferência')}</div></section>
+      ${kpi('Dinheiro (caixa)',money(C.porForma['Dinheiro'].total),'','forma','Dinheiro')}${kpi('Cartão (maquininha)',money(C.porForma['Cartão'].total),'','forma','Cartão')}${kpi('Pix',money(C.porForma['Pix'].total),'','forma','Pix')}${kpi('Transferência / boleto',money(C.porForma['Transferência'].total+C.porForma['Boleto'].total+C.porForma['Depósito'].total),'','forma','Transferência|Boleto|Depósito')}</div></section>
     <section class="block"><h2>3. Vincular</h2><p class="sub">À esquerda, o dinheiro que entrou no banco. À direita, quem pagou: escolha a venda ou o título e toque em Vincular.</p>
       <div class="board"><div class="col">${esquerda}</div><div class="col">${direita}</div></div></section>
     <section class="block"><h2>4. Formas de recebimento do dia</h2><p class="sub">Vendas e títulos baixados no dia. Se a forma foi lançada errada no sistema, troque aqui: o painel e a conciliação são refeitos na hora.</p>
