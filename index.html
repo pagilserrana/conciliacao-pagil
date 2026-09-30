@@ -184,6 +184,18 @@ body.mododia .top-in .period,body.mododia #quick,body.mododia header .btn.primar
 @keyframes flash{0%{background:var(--amber-soft)}100%{background:transparent}}
 tr.flash td,.cand.flash{animation:flash 1.8s ease-out}
 body.conectando header .period,body.conectando #quick,body.conectando nav.tabs,body.conectando #sync,body.conectando header .btn{display:none}
+.cond-chart{display:grid;grid-template-columns:230px minmax(0,1fr);gap:18px;align-items:center;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px}
+.donut svg{width:100%;max-width:220px;display:block;margin:0 auto}
+.donut .dz1{font:800 15px "Archivo",sans-serif;fill:var(--ink)} .donut .dz2{font:12px "Archivo",sans-serif;fill:var(--ink-2)}
+.cond-leg{display:grid;gap:6px}
+.cond-row{display:grid;grid-template-columns:14px minmax(110px,170px) minmax(0,1fr) 120px;gap:10px;align-items:center;background:none;border:1px solid transparent;border-radius:8px;padding:6px 8px;cursor:pointer;text-align:left;width:100%}
+.cond-row:hover{border-color:var(--line);background:var(--paper)}
+.cond-row i{width:12px;height:12px;border-radius:3px}
+.cond-row .nm{font-weight:620}
+.cond-row .br{height:9px;background:var(--paper);border-radius:99px;overflow:hidden;display:block}
+.cond-row .br span{display:block;height:100%;border-radius:99px}
+.cond-row .vl{text-align:right;font-weight:700}
+@media (max-width:760px){ .cond-chart{grid-template-columns:1fr} .cond-row{grid-template-columns:14px minmax(0,1fr) 110px} .cond-row .br{display:none} }
 .toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--paper);padding:10px 16px;border-radius:10px;max-width:min(600px,92vw);z-index:60;font-size:14px;box-shadow:0 6px 24px rgba(0,0,0,.25)}
 .statusline{font-size:12.5px;color:var(--ink-2)}
 @media (max-width:900px){ .cards{grid-template-columns:repeat(2,minmax(0,1fr))} .imp,.two{grid-template-columns:1fr} .facts{grid-template-columns:1fr 1fr} .bar{grid-template-columns:110px minmax(0,1fr) 110px} }
@@ -649,6 +661,7 @@ function vPainel(C){
   return `<h1 class="page">${periodo}</h1>
     <p class="lede">${[C.ni.length?`<b style="color:var(--red)">${C.ni.length} entrada(s) no banco sem dono</b>`:'',C.conf.length?`<b style="color:var(--amber)">${C.conf.length} para conferir</b>`:''].filter(Boolean).join(' e ')||'Todas as entradas do período estão identificadas'}. Toque em qualquer valor para ver os lançamentos.</p>
     ${cards}
+    ${graficoCondicoes(C,'Vendas por condição de pagamento')}
     <section class="block"><h2>Recebido por forma</h2><p class="sub">Pix, transferência, boleto e depósito vêm do extrato; dinheiro e cartão vêm das vendas; títulos baixados sem entrada no banco vêm do Contas a Receber.</p>
       <div class="legend"><span><i style="background:var(--green)"></i>Conciliado</span><span><i style="background:var(--amber)"></i>Conferir</span><span><i style="background:var(--red)"></i>Não identificado</span><span><i style="background:var(--blue)"></i>Pelas vendas (caixa/maquininha)</span></div>
       <div class="bars">${barras||'<div class="panel empty">Nada recebido no período.</div>'}</div></section>
@@ -690,6 +703,36 @@ function vReceber(C){
     ${tabela(rs.map(r=>linhaReceber(r,LI)),{dataLabel:'Vencimento'})}`;
 }
 
+/* ============ gráfico: vendas por condição de pagamento ============ */
+const COR_COND={'Pix':'#2C8A5E','Dinheiro':'#C99A1E','Cartão':'#2C5A86','Boleto':'#8E5BB5','Transferência':'#3A9BB8','Outros':'#8A8F8C','A prazo (outros)':'#B06B3A'};
+const COR_PRAZO=['#D2691E','#B5472E','#E6954F','#9C3D1F','#F2B26B','#C4553A','#7E3A1C'];
+function condicaoGrupo(v){
+  const t=norm(v.formaTxt||'');
+  if(v.forma==='Pix') return 'Pix'; if(v.forma==='Dinheiro') return 'Dinheiro'; if(v.forma==='Cartão') return 'Cartão';
+  if(/BOLETO/.test(t)) return 'Boleto';
+  if(v.forma==='Transferência') return 'Transferência';
+  if(v.forma==='A prazo'){ let m=t.match(/\b(\d{1,3}(?:\/\d{1,3})+)\b/); if(m) return m[1]+' DD'; m=t.match(/\b(\d{1,3})\s*(DIAS|DIA|DD|D)\b/); if(m) return m[1]+' DD'; return 'A prazo (outros)'; }
+  return 'Outros';
+}
+function gruposCondicao(vendas){
+  const g={}; vendas.forEach(v=>{ const k=condicaoGrupo(v); (g[k]=g[k]||{label:k,total:0,itens:[]}); g[k].total+=v.valor; g[k].itens.push(v); });
+  const arr=Object.values(g).sort((a,b)=>b.total-a.total); let ip=0;
+  arr.forEach(x=>{ x.cor=COR_COND[x.label]||COR_PRAZO[(ip++)%COR_PRAZO.length]; x.prazo=/ DD$/.test(x.label)||x.label==='A prazo (outros)'; });
+  return arr;
+}
+function graficoCondicoes(C,titulo){
+  const gs=gruposCondicao(C.vendas); const tot=gs.reduce((a,x)=>a+x.total,0);
+  if(!tot) return `<section class="block"><h2>${titulo}</h2><div class="panel empty">Nenhuma venda no período.</div></section>`;
+  const R=62, CIRC=2*Math.PI*R; let off=0;
+  const segs=gs.map(x=>{ const len=CIRC*x.total/tot; const sseg=`<circle cx="80" cy="80" r="${R}" fill="none" stroke="${x.cor}" stroke-width="28" stroke-dasharray="${Math.max(0,len-1.2)} ${CIRC}" stroke-dashoffset="${-off}" transform="rotate(-90 80 80)"><title>${esc(x.label)}: ${money(x.total)}</title></circle>`; off+=len; return sseg; }).join('');
+  const prazoTot=gs.filter(x=>x.prazo).reduce((a,x)=>a+x.total,0);
+  return `<section class="block"><h2>${titulo}</h2><p class="sub">Toque numa condição para ver os clientes e pedidos.</p>
+    <div class="cond-chart"><div class="donut"><svg viewBox="0 0 160 160" role="img" aria-label="Vendas por condição de pagamento">${segs}
+      <text x="80" y="76" text-anchor="middle" class="dz1">${money(tot).replace(/\u00a0/g,' ')}</text><text x="80" y="95" text-anchor="middle" class="dz2">${C.vendas.length} lançamento(s)</text></svg>
+      ${prazoTot?`<p class="statusline" style="text-align:center;margin:6px 0 0">A prazo: ${money(prazoTot)} (${Math.round(100*prazoTot/tot)}%)</p>`:''}</div>
+    <div class="cond-leg">${gs.map(x=>`<button class="cond-row" data-act="det" data-k="cond" data-f="${esc(x.label)}"><i style="background:${x.cor}"></i><span class="nm">${esc(x.label)}<span class="small">${x.itens.length} lançamento(s)</span></span>
+      <span class="br"><span style="width:${Math.max(2,100*x.total/gs[0].total)}%;background:${x.cor}"></span></span><span class="vl">${money(x.total)}<span class="small">${(100*x.total/tot).toFixed(1).replace('.',',')}%</span></span></button>`).join('')}</div></div></section>`;
+}
 /* ============ detalhamento (clique nos totais) ============ */
 function abrirDet(k,f){
   const C=S._C; let titulo='',sub='',rows=[],grupos=null,dl='Data';
@@ -697,6 +740,7 @@ function abrirDet(k,f){
   if(k==='vendas'){ titulo='Vendas'; sub='Toque numa forma para filtrar.'; rows=C.vendas.map(linhaVenda); grupos=[...new Set(C.vendas.map(v=>v.forma))]; }
   else if(k==='recebido'){ titulo='Recebimentos por forma'; sub='Pix, transferência, boleto e depósito pelo extrato; dinheiro e cartão pelas vendas.';
     FORMAS_R.forEach(fm=>C.porForma[fm].itens.forEach(i=>rows.push(Object.assign(linhaItem(i,LI),{forma:fm})))); grupos=FORMAS_R.filter(fm=>C.porForma[fm].total); }
+  else if(k==='cond'){ titulo='Vendas · '+f; sub='Clientes e pedidos vendidos nesta condição de pagamento.'; rows=C.vendas.filter(v=>condicaoGrupo(v)===f).sort((a,b)=>b.valor-a.valor).map(linhaVenda); }
   else if(k==='forma'){ const fs=String(f).split('|').filter(x=>C.porForma[x]); titulo=fs.length>1?fs.join(' / '):f; sub='Todos os lançamentos que formam este total.';
     rows=fs.flatMap(fm=>C.porForma[fm].itens.map(i=>Object.assign(linhaItem(i,LI),{forma:fm}))); if(fs.length>1) grupos=fs.filter(fm=>C.porForma[fm].itens.length); if(f===BSB) sub='Títulos baixados no período sem forma de recebimento informada. Escolha a forma na coluna Forma: o título sai daqui e vai para a forma escolhida (Dinheiro, Cartão, Pix…).'; }
   else if(k==='entradas'){ titulo='Entradas no banco'; rows=C.entradas.filter(e=>e.st!=='out').map(linhaEntrada); grupos=[...new Set(C.entradas.map(e=>e.forma))]; }
@@ -829,6 +873,7 @@ function vDia(C){
       ${kpi('Vendas',money(C.tVendas),'','vendas')}${kpi('Entrou no banco',money(C.tEntradas),'','entradas')}${kpi('🟢 Conciliado',money(sum(C.ok)),'g','ok')}
       ${kpi('🟡 Conferir',money(sum(C.conf)),'a','conf')}${kpi('🔴 Não identificado',money(sum(C.ni)),'r','ni')}${kpi('Baixas sem forma',money(C.porForma[BSB].total),C.porForma[BSB].total?'a':'','forma',BSB)}
       ${kpi('Dinheiro (caixa)',money(C.porForma['Dinheiro'].total),'','forma','Dinheiro')}${kpi('Cartão (maquininha)',money(C.porForma['Cartão'].total),'','forma','Cartão')}${kpi('Pix',money(C.porForma['Pix'].total),'','forma','Pix')}${kpi('Transferência / boleto',money(C.porForma['Transferência'].total+C.porForma['Boleto'].total+C.porForma['Depósito'].total),'','forma','Transferência|Boleto|Depósito')}</div></section>
+    ${graficoCondicoes(C,'Vendas do dia por condição de pagamento')}
     <section class="block"><h2>3. Vincular</h2><p class="sub">À esquerda, o dinheiro que entrou no banco. À direita, quem pagou: escolha a venda ou o título e toque em Vincular.</p>
       <div class="board"><div class="col">${esquerda}</div><div class="col">${direita}</div></div></section>
     <section class="block"><h2>4. Formas de recebimento do dia</h2><p class="sub">Vendas e títulos baixados no dia. Se a forma foi lançada errada no sistema, troque aqui: o painel e a conciliação são refeitos na hora.</p>
@@ -1024,6 +1069,11 @@ function gerarPdf(){
     return [f,String(C.porForma[f].itens.length),m(C.porForma[f].total),it.length?m(sum(it.filter(e=>e.st==='ok'))):'—',it.length?m(sum(it.filter(e=>e.st==='conf'))):'—',it.length?m(sum(it.filter(e=>e.st==='ni'))):'—']; });
   T({head:[['Forma','Qtd.','Total','Conciliado','Conferir','Não identif.']],body:fr,foot:[['Total','',m(C.recebido),m(sum(C.ok)),m(sum(C.conf)),m(sum(C.ni))]],
     columnStyles:{1:{halign:'right'},2:{halign:'right',fontStyle:'bold'},3:{halign:'right'},4:{halign:'right'},5:{halign:'right'}},didParseCell:d=>{ if(d.section!=='body'&&d.column.index>=1) d.cell.styles.halign='right'; }});
+  { const gs=gruposCondicao(C.vendas); const tot=gs.reduce((a,x)=>a+x.total,0);
+    if(tot){ H('Vendas por condição de pagamento','Participação de cada condição no total vendido no período.');
+      T({head:[['Condição','Qtd.','Valor','%']],body:gs.map(x=>[x.label,String(x.itens.length),m(x.total),(100*x.total/tot).toFixed(1).replace('.',',')+'%']),foot:[['Total',String(C.vendas.length),m(tot),'100%']],
+        columnStyles:{1:{halign:'right'},2:{halign:'right',fontStyle:'bold'},3:{halign:'right'}},didParseCell:d=>{ if(d.section!=='body'&&d.column.index>=1) d.cell.styles.halign='right';
+          if(d.section==='body'&&d.column.index===0){ const c=gs[d.row.index].cor; d.cell.styles.textColor=[parseInt(c.slice(1,3),16),parseInt(c.slice(3,5),16),parseInt(c.slice(5,7),16)]; d.cell.styles.fontStyle='bold'; } }}); } }
   // diferenças
   const difs=[...C.ni.map(e=>['Entrou sem dono',br(e.date),e.pagador||e.desc.slice(0,40),'—',m(e.valor)]),
     ...C.vendasNaoEntrou.map(v=>['Venda sem entrada no banco',br(v.date),v.cliente,'Venda '+(v.doc||'—'),m(v.valor)]),
