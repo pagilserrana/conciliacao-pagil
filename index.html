@@ -111,6 +111,8 @@ td .small,.small{display:block;font-size:12.5px;color:var(--ink-2)}
 .st.conf{background:var(--amber-soft);color:var(--amber)}
 .st.ni{background:var(--red-soft);color:var(--red)}
 .st.out{background:var(--blue-soft);color:var(--blue)}
+.st.serv{background:#EDE4F6;color:#7A4BA8}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .st.serv{background:#2E2340;color:#C7A6EC}}
 .st.neu{background:var(--paper);color:var(--ink-2);border:1px solid var(--line)}
 .toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:0 0 12px}
 .toolbar .sp{flex:1}
@@ -172,7 +174,7 @@ body.mododia .top-in .period,body.mododia #quick,body.mododia header .btn.primar
 .colh{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;margin-bottom:10px}
 .lista{overflow:auto;max-height:480px}
 .dot{width:12px;height:12px;border-radius:50%;background:var(--line);justify-self:center}
-.dot.ok{background:var(--green)} .dot.conf{background:var(--amber)} .dot.ni{background:var(--red)} .dot.out{background:var(--blue)}
+.dot.ok{background:var(--green)} .dot.conf{background:var(--amber)} .dot.ni{background:var(--red)} .dot.out{background:var(--blue)} .dot.serv{background:#7A4BA8}
 .cand.ent.sel{border-color:var(--blue);background:var(--blue-soft)}
 .linkbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--line);padding-top:10px;margin-top:8px}
 .linkbar .sp{flex:1}
@@ -196,6 +198,11 @@ body.conectando header .period,body.conectando #quick,body.conectando nav.tabs,b
 .cond-row .br span{display:block;height:100%;border-radius:99px}
 .cond-row .vl{text-align:right;font-weight:700}
 @media (max-width:760px){ .cond-chart{grid-template-columns:1fr} .cond-row{grid-template-columns:14px minmax(0,1fr) 110px} .cond-row .br{display:none} }
+.otag{display:inline-block;margin:3px 0 0 0;font-size:11px;font-weight:650;border-radius:4px;padding:1px 6px;background:var(--paper);color:var(--ink-2);border:1px solid var(--line)}
+.otag.o-venda{background:var(--blue-soft);color:var(--blue);border-color:transparent}
+.otag.o-titulo{background:var(--green-soft);color:var(--green);border-color:transparent}
+.otag.o-parcial{background:var(--amber-soft);color:var(--amber);border-color:transparent}
+.toolbar.orig{margin-top:2px}
 .toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--paper);padding:10px 16px;border-radius:10px;max-width:min(600px,92vw);z-index:60;font-size:14px;box-shadow:0 6px 24px rgba(0,0,0,.25)}
 .statusline{font-size:12.5px;color:var(--ink-2)}
 @media (max-width:900px){ .cards{grid-template-columns:repeat(2,minmax(0,1fr))} .imp,.two{grid-template-columns:1fr} .facts{grid-template-columns:1fr 1fr} .bar{grid-template-columns:110px minmax(0,1fr) 110px} }
@@ -325,7 +332,7 @@ const isBalcao=s=>/BALCAO|CONSUMIDOR|NAO IDENTIFICADO|DIVERSOS/.test(norm(s));
 
 /* ============ armazenamento ============ */
 // coleções: entradas, vendas, receber — um documento por data (data do extrato, da venda ou do vencimento)
-const COLS=['entradas','vendas','receber'];
+const COLS=['entradas','vendas','receber','servicos'];
 const gkey=(col,x)=>col==='receber'?x.venc:x.date;
 /* ============ banco de dados: Firebase (Firestore) ============ */
 // Coleções: entradas / vendas / receber — um documento por dia ({date, items}).
@@ -340,7 +347,7 @@ const Store={mode:'local', inicial:null,
   async init(){
     if(!db){ this.mode='local'; return; }
     this.mode='firebase';
-    const dados={entradas:[],vendas:[],receber:[]};
+    const dados={entradas:[],vendas:[],receber:[],servicos:[]};
     const snaps=await Promise.all(COLS.map(c=>db.collection(c).get()));
     snaps.forEach((sn,i)=>sn.forEach(d=>{ const v=d.data(); if(v&&Array.isArray(v.items)) dados[COLS[i]].push(...v.items); }));
     const aj=await db.doc('ajustes/manual').get();
@@ -491,7 +498,7 @@ async function loginGoogle(){
 
 
 /* ============ estado ============ */
-const D={entradas:[],vendas:[],receber:[]};
+const D={entradas:[],vendas:[],receber:[],servicos:[]};
 const S={tab:'dia',dia:null,de:null,ate:null,quick:'mes',imp:null,filtro:{},selE:null,selItens:new Set(),dq:''};
 const HOJE=today();
 let IDX={}; // id -> item
@@ -573,6 +580,9 @@ function calc(){
   vendas.filter(v=>v.forma==='Dinheiro'||v.forma==='Cartão').forEach(v=>{ porForma[v.forma].total+=v.valor; porForma[v.forma].itens.push({k:'venda',x:v}); });
   entradas.filter(e=>e.st!=='out').forEach(e=>{ const f=e.forma==='Cartão'?'Cartão':e.forma; porForma[f].total+=e.valor; porForma[f].itens.push({k:'entrada',x:e}); });
   D.receber.filter(r=>r.baixado&&inP(r.dataBaixa)&&!LI[r.id]).forEach(r=>{ const f=r.formaRec&&porForma[r.formaRec]?r.formaRec:BSB; porForma[f].total+=r.valor; porForma[f].itens.push({k:'rec',x:r}); });
+  // serviços cadastrados à mão (ex.: recebidos em dinheiro) também são dinheiro recebido
+  const servMan=D.servicos.filter(x=>inP(x.date));
+  servMan.forEach(x=>{ const f=porForma[x.forma]?x.forma:'Outros'; porForma[f].total+=x.valor; porForma[f].itens.push({k:'serv',x}); });
   const recebido=FORMAS_R.reduce((a,f)=>a+porForma[f].total,0);
   const receberAll=D.receber;
   const abertos=receberAll.filter(r=>!r.baixado&&(!LI[r.id]||LI[r.id].st!=='ok'));
@@ -583,25 +593,30 @@ function calc(){
   const baixaNaoEntrou=[]; // título baixado com forma escolhida à mão conta como identificado
   const byst=st=>entradas.filter(e=>e.st===st);
   return {LI,vendas,entradas,porForma,recebido,abertos,atrasados,previstos,recebidosTit,vendasNaoEntrou,baixaNaoEntrou,
-    ok:byst('ok'),conf:byst('conf'),ni:byst('ni'),out:byst('out'),
+    ok:byst('ok'),conf:byst('conf'),ni:byst('ni'),out:byst('out'),serv:byst('serv'),servMan,
     tVendas:sum(vendas),tEntradas:sum(entradas.filter(e=>e.st!=='out')),statusAlvo};
 }
 
 /* ============ descrições para listas ============ */
-const ST={ok:['ok','🟢 Conciliado'],conf:['conf','🟡 Conferir'],ni:['ni','🔴 Não identificado'],out:['out','Outra entrada'],
+const ST={parcial:['conf','🟠 Pago parcial'],serv:['serv','🔵 Serviço'],servm:['serv','🔵 Serviço (cadastrado)'],ok:['ok','🟢 Conciliado'],conf:['conf','🟡 Conferir'],ni:['ni','🔴 Não identificado'],out:['out','Outra entrada'],
   caixa:['neu','Caixa (dinheiro)'],maq:['neu','Maquininha'],prazo:['neu','A prazo'],nao:['ni','🔴 Não entrou no banco'],
   semext:['neu','Sem extrato do dia'],aberto:['neu','Previsto'],atraso:['ni','🔴 Atrasado'],identificado:['ok','🟢 Identificado'],recebido:['ok','🟢 Recebido'],baixado:['conf','🟡 Forma não informada']};
 const stHtml=k=>{ const s=ST[k]||['neu',k]; return `<span class="st ${s[0]}">${esc(s[1])}</span>`; };
 function refDe(id){ const x=IDX[id]; if(!x) return 'lançamento removido'; return x.col==='vendas'?`Venda ${x.doc||'—'}`:`Título ${x.doc||'—'}`; }
 function clienteDaEntrada(e){ if(e.links&&e.links.length){ const n=[...new Set(e.links.map(id=>IDX[id]&&IDX[id].cliente).filter(Boolean))]; if(n.length) return n.join(', '); } return e.pagador||'Não identificado'; }
-function linhaEntrada(e){ return {cliente:clienteDaEntrada(e),sub:e.pagador&&clienteDaEntrada(e)!==e.pagador?'Pagador no extrato: '+e.pagador:e.desc,valor:e.valor,data:e.date,
+const ORIG={venda:'Vendas',titulo:'Títulos pagos',parcial:'Pagos parcial',serv:'Serviços',aberto:'Títulos em aberto',semvinc:'Sem vínculo'};
+function origemEntrada(e){ if(e.st==='serv') return 'serv'; const xs=(e.links||[]).map(i=>IDX[i]).filter(Boolean); if(!xs.length) return 'semvinc';
+  if(xs.some(x=>x.col==='receber'&&x.parcial)) return 'parcial'; if(xs.some(x=>x.col==='receber')) return 'titulo'; return 'venda'; }
+function origemReceber(r,LI){ if(r.parcial) return 'parcial'; if(r.baixado||(LI[r.id]&&LI[r.id].st==='ok')) return 'titulo'; return 'aberto'; }
+function linhaEntrada(e){ return {orig:origemEntrada(e),cliente:clienteDaEntrada(e),sub:e.pagador&&clienteDaEntrada(e)!==e.pagador?'Pagador no extrato: '+e.pagador:e.desc,valor:e.valor,data:e.date,
   doc:(e.links||[]).map(refDe).join(', ')||'—',st:e.st,act:`data-act="conc" data-id="${e.id}"`,forma:e.forma,item:e}; }
-function linhaVenda(v){ return {cliente:v.cliente,sub:v.formaTxt||v.forma,valor:v.valor,data:v.date,doc:'Venda '+(v.doc||'—'),st:v._st||'nao',
+function linhaVenda(v){ return {orig:'venda',cliente:v.cliente,sub:v.formaTxt||v.forma,valor:v.valor,data:v.date,doc:'Venda '+(v.doc||'—'),st:v._st||'nao',
   act:(v.forma==='Pix'||v.forma==='Transferência'||v.forma==='Outros')?`data-act="alvo" data-id="${v.id}"`:'',forma:v.forma,
   extra:v._e?`Entrou ${brs(v._e.date)} · ${v._e.pagador||v._e.desc}`:'',item:v}; }
-function linhaItem(i,LI){ return i.k==='venda'?linhaVenda(i.x):i.k==='rec'?Object.assign(linhaReceber(i.x,LI),{data:i.x.dataBaixa}):linhaEntrada(i.x); }
-function linhaReceber(r,LI){ const l=LI[r.id]; const st=l&&l.st==='ok'?'recebido':r.baixado?(!r.formaRec?'baixado':'identificado'):r.venc<HOJE?'atraso':'aberto';
-  return {cliente:r.cliente,sub:(r.pedido?'Pedido '+r.pedido:'')+(r.juros?` · inclui juros ${money(r.juros)}`:''),valor:r.valor,data:r.venc,doc:'Título '+(r.doc||'—'),st,act:`data-act="alvo" data-id="${r.id}"`,item:r.baixado?r:null,
+function linhaServ(x){ return {orig:'serv',cliente:x.cliente,sub:x.desc||'Serviço',valor:x.valor,data:x.date,doc:'Serviço'+(x.doc?' '+x.doc:''),st:'servm',act:`data-act="servedit" data-id="${x.id}"`,forma:x.forma}; }
+function linhaItem(i,LI){ return i.k==='serv'?linhaServ(i.x):i.k==='venda'?linhaVenda(i.x):i.k==='rec'?Object.assign(linhaReceber(i.x,LI),{data:i.x.dataBaixa}):linhaEntrada(i.x); }
+function linhaReceber(r,LI){ const l=LI[r.id]; const st=r.parcial?'parcial':l&&l.st==='ok'?'recebido':r.baixado?(!r.formaRec?'baixado':'identificado'):r.venc<HOJE?'atraso':'aberto';
+  return {orig:origemReceber(r,LI),cliente:r.cliente,sub:(r.pedido?'Pedido '+r.pedido:'')+(r.juros?` · inclui juros ${money(r.juros)}`:'')+(r.parcial?` · pago ${money(r.valor)} de ${money(r.valorTit)} · falta ${money(r.saldo)}`:''),valor:r.valor,data:r.venc,doc:'Título '+(r.doc||'—'),st,act:`data-act="alvo" data-id="${r.id}"`,item:r.baixado?r:null,
     extra:l?`${l.st==='ok'?'Pago':'Possível pagamento'} em ${brs(l.e.date)} · ${l.e.pagador||''}`:r.baixado?(!r.formaRec?`Baixado em ${brs(r.dataBaixa)} · escolha a forma de recebimento`:`Baixado em ${brs(r.dataBaixa)} · recebido em ${r.formaRec.toLowerCase()}`):(r.venc<HOJE?`${dayDiff(r.venc,HOJE)} dia(s) de atraso`:(r.venc===HOJE?'vence hoje':`vence em ${dayDiff(HOJE,r.venc)} dia(s)`))}; }
 
 /* ============ renderização ============ */
@@ -628,11 +643,11 @@ function render(){
   if(S.tab==='dia'){ S.de=S.ate=S.dia; S.quick=''; }
   const C=calc();
   document.body.classList.toggle('mododia',S.tab==='dia');
-  const tabs=[['dia','Lançamento do dia'],['painel','Painel do período'],['banco','Entradas no banco',C.entradas.length],['vendas','Vendas',C.vendas.length],['receber','A receber',C.abertos.length],['importar','Alimentar (PDF)']];
+  const tabs=[['dia','Lançamento do dia'],['painel','Painel do período'],['banco','Entradas no banco',C.entradas.length],['vendas','Vendas',C.vendas.length],['receber','A receber',C.abertos.length],['servicos','Serviços',C.serv.length+C.servMan.length],['importar','Alimentar (PDF)']];
   $('#tabs').innerHTML=tabs.map(([k,l,n])=>`<button role="tab" data-tab="${k}" aria-selected="${S.tab===k}">${l}${n!=null?`<span class="count">${n}</span>`:''}</button>`).join('');
   $('#quick').innerHTML=[['hoje','Hoje'],['ontem','Ontem'],['7d','7 dias'],['mes','Este mês'],['tudo','Tudo']].map(([k,l])=>`<button data-act="quick" data-q="${k}" aria-pressed="${S.quick===k}">${l}</button>`).join('');
   $('#pDe').value=S.de; $('#pAte').value=S.ate;
-  $('#app').innerHTML= S.tab==='dia'?vDia(C): S.tab==='painel'?vPainel(C): S.tab==='banco'?vBanco(C): S.tab==='vendas'?vVendas(C): S.tab==='receber'?vReceber(C): vImportar();
+  $('#app').innerHTML= S.tab==='dia'?vDia(C): S.tab==='painel'?vPainel(C): S.tab==='banco'?vBanco(C): S.tab==='vendas'?vVendas(C): S.tab==='receber'?vReceber(C): S.tab==='servicos'?vServicos(C): vImportar();
   S._C=C;
 }
 const card=(cls,q,t,v,s,act)=>`<button class="card ${cls}" ${act}><span class="q">${q}</span><span class="t">${t}</span><span class="v">${v}</span><span class="s">${s}</span></button>`;
@@ -650,6 +665,7 @@ function vPainel(C){
     ${card('r','O que entrou sem dono?','🔴 Não identificados',money(sum(C.ni)),`${C.ni.length} crédito(s)`,'data-act="det" data-k="ni"')}
     ${card('b','O que temos a receber?','Recebimentos em aberto',money(sum(C.previstos)),`${C.previstos.length} título(s) a vencer`,'data-act="det" data-k="previstos"')}
     ${card('r','O que deveria ter entrado?','Atrasados / não entrou',money(sum(C.atrasados)+sum(C.vendasNaoEntrou)+sum(C.baixaNaoEntrou)),`${C.atrasados.length} título(s) vencido(s) · ${C.vendasNaoEntrou.length} venda(s) Pix`,'data-act="det" data-k="atrasados"')}
+    ${card('b','O que não é venda?','🔵 Serviços',money(sum(C.serv)+sum(C.servMan)),`${C.serv.length} pelo banco · ${C.servMan.length} cadastrado(s)`,'data-act="det" data-k="serv"')}
   </div>`;
   const maxF=Math.max(1,...FORMAS_R.map(f=>C.porForma[f].total));
   const barras=FORMAS_R.filter(f=>C.porForma[f].total).map(f=>{ const it=C.porForma[f].itens; const tot=C.porForma[f].total;
@@ -668,10 +684,17 @@ function vPainel(C){
     ${C.conf.length||C.ni.length?`<section class="block"><h2>Para resolver agora</h2><p class="sub">Toque na linha para escolher a venda ou o título correspondente.</p>${tabela([...C.ni,...C.conf].sort((a,b)=>a.date.localeCompare(b.date)).map(linhaEntrada))}</section>`:''}`;
 }
 function tabela(rows,opt={}){
-  if(!rows.length) return '<div class="panel empty">Nenhum lançamento.</div>';
-  return `<div class="scroll"><table><thead><tr><th>Cliente</th><th class="num">Valor</th><th>${opt.dataLabel||'Data'}</th><th>Forma</th><th>Venda / documento</th><th>Status</th></tr></thead><tbody>
-    ${rows.map(r=>`<tr class="${r.act?'click':''}" ${r.act||''} ${r.act?'tabindex="0"':''}><td><b>${esc(r.cliente)}</b>${r.sub?`<span class="small">${esc(String(r.sub).slice(0,90))}</span>`:''}</td><td class="num"><b>${money(r.valor)}</b></td><td>${br(r.data)}</td><td>${r.item?formaCell(r.item):'<span class="small">—</span>'}</td><td>${esc(r.doc)}${r.extra?`<span class="small">${esc(r.extra)}</span>`:''}</td><td>${stHtml(r.st)}</td></tr>`).join('')}
-    </tbody><tfoot><tr><td>${rows.length} lançamento(s)</td><td class="num">${money(sum(rows))}</td><td colspan="4"></td></tr></tfoot></table></div>`;
+  let filtro='';
+  if(opt.fid){ const ord=['venda','titulo','parcial','serv','aberto','semvinc']; const pres=ord.filter(o=>rows.some(r=>r.orig===o));
+    if(pres.length>1){ S.orig=S.orig||{}; let cur=S.orig[opt.fid]||'todos'; if(cur!=='todos'&&!pres.includes(cur)) cur='todos';
+      filtro=`<div class="toolbar orig"><div class="chips">${[['todos',`Todos · ${money(sum(rows))}`],...pres.map(o=>[o,`${ORIG[o]} (${rows.filter(r=>r.orig===o).length}) · ${money(sum(rows.filter(r=>r.orig===o)))}`])]
+        .map(([k,l])=>`<button data-act="origem" data-fid="${opt.fid}" data-v="${k}" aria-pressed="${cur===k}">${esc(l)}</button>`).join('')}</div></div>`;
+      if(cur!=='todos') rows=rows.filter(r=>r.orig===cur); } }
+  if(!rows.length) return filtro+'<div class="panel empty">Nenhum lançamento.</div>';
+  const saldoP=rows.filter(r=>r.orig==='parcial'&&r.item&&r.item.saldo).reduce((a,r)=>a+r.item.saldo,0);
+  return filtro+`<div class="scroll"><table><thead><tr><th>Cliente</th><th class="num">Valor</th><th>${opt.dataLabel||'Data'}</th><th>Forma</th><th>Venda / documento</th><th>Status</th></tr></thead><tbody>
+    ${rows.map(r=>`<tr class="${r.act?'click':''}" ${r.act||''} ${r.act?'tabindex="0"':''}><td><b>${esc(r.cliente)}</b>${r.sub?`<span class="small">${esc(String(r.sub).slice(0,90))}</span>`:''}</td><td class="num"><b>${money(r.valor)}</b></td><td>${br(r.data)}</td><td>${r.item?formaCell(r.item):'<span class="small">—</span>'}</td><td>${esc(r.doc)}${r.orig&&ORIG[r.orig]?`<span class="otag o-${r.orig}">${{venda:'Venda',titulo:'Título pago',parcial:'Pago parcial',serv:'Serviço',aberto:'Título em aberto',semvinc:'Sem vínculo'}[r.orig]}</span>`:''}${r.extra?`<span class="small">${esc(r.extra)}</span>`:''}</td><td>${stHtml(r.st)}${r.st==='parcial'&&r.item?`<span class="small" style="color:var(--amber)">Saldo ${money(r.item.saldo)}</span>`:''}</td></tr>`).join('')}
+    </tbody><tfoot><tr><td>${rows.length} lançamento(s)</td><td class="num">${money(sum(rows))}</td><td colspan="4">${saldoP?`Saldo restante dos parciais: <b style="color:var(--amber)">${money(saldoP)}</b>`:''}</td></tr></tfoot></table></div>`;
 }
 function chips(name,opts,cur){ return `<div class="chips">${opts.map(([k,l])=>`<button data-act="filtro" data-n="${name}" data-v="${k}" aria-pressed="${cur===k}">${l}</button>`).join('')}</div>`; }
 function vBanco(C){
@@ -682,7 +705,7 @@ function vBanco(C){
   return `<h1 class="page">Entradas no banco</h1><p class="lede">Só os créditos do extrato Sicoob (saídas, pagamentos e tarifas são ignorados). Toque numa entrada para conferir ou escolher manualmente a venda ou o título.</p>
     <div class="toolbar">${chips('banco',[['todos',`Todas (${C.entradas.length})`],['ok',`🟢 Conciliados (${C.ok.length})`],['conf',`🟡 Conferir (${C.conf.length})`],['ni',`🔴 Não identificados (${C.ni.length})`],['out',`Outras (${C.out.length})`]],f)}
       <span class="sp"></span><input class="search" id="bq" placeholder="Buscar cliente, pagador ou valor" value="${esc(S.filtro.bq||'')}"><button class="btn" data-act="auto">Conciliar automaticamente</button></div>
-    ${tabela(es.map(linhaEntrada))}`;
+    ${tabela(es.map(linhaEntrada),{fid:'banco'})}`;
 }
 function vVendas(C){
   const f=S.filtro.vendas||'todas';
@@ -691,16 +714,16 @@ function vVendas(C){
   const formas=[...new Set(C.vendas.map(v=>v.forma))];
   return `<h1 class="page">Vendas</h1><p class="lede">Vendas no Pix e transferência devem aparecer no extrato (só é cobrado nos dias com extrato importado). Dinheiro e cartão ficam no caixa e na maquininha; a prazo vira recebimento.</p>
     <div class="toolbar">${chips('vendas',[['todas',`Todas (${C.vendas.length})`],...formas.map(x=>[x,`${x} (${C.vendas.filter(v=>v.forma===x).length})`])],f)}<span class="sp"></span><button class="btn" data-act="addvenda">Cadastrar venda</button></div>
-    ${tabela(vs.map(linhaVenda))}`;
+    ${tabela(vs.map(linhaVenda),{fid:'vendas'})}`;
 }
 function vReceber(C){
   const f=S.filtro.rec||'aberto';
   const LI=C.LI; let rs=D.receber.slice();
-  if(f==='aberto') rs=C.abertos; else if(f==='atraso') rs=C.atrasados; else if(f==='previsto') rs=C.previstos; else if(f==='recebido') rs=D.receber.filter(r=>r.baixado||(LI[r.id]&&LI[r.id].st==='ok'));
+  if(f==='aberto') rs=C.abertos; else if(f==='atraso') rs=C.atrasados; else if(f==='previsto') rs=C.previstos; else if(f==='recebido') rs=D.receber.filter(r=>r.baixado||(LI[r.id]&&LI[r.id].st==='ok')); else if(f==='parcial') rs=D.receber.filter(r=>r.parcial);
   rs=rs.slice().sort((a,b)=>a.venc.localeCompare(b.venc));
   return `<h1 class="page">A receber</h1><p class="lede">Títulos em aberto (Contas a Receber e parcelas a prazo das vendas). Quando o dinheiro entra no banco, o sistema liga ao título sozinho. Estes números não dependem do período escolhido.</p>
-    <div class="toolbar">${chips('rec',[['aberto',`Em aberto (${C.abertos.length})`],['atraso',`🔴 Atrasados (${C.atrasados.length})`],['previsto',`A vencer (${C.previstos.length})`],['recebido','🟢 Recebidos'],['todos','Todos']],f)}<span class="sp"></span><button class="btn" data-act="addrec">Cadastrar recebimento</button></div>
-    ${tabela(rs.map(r=>linhaReceber(r,LI)),{dataLabel:'Vencimento'})}`;
+    <div class="toolbar">${chips('rec',[['aberto',`Em aberto (${C.abertos.length})`],['atraso',`🔴 Atrasados (${C.atrasados.length})`],['previsto',`A vencer (${C.previstos.length})`],['recebido','🟢 Recebidos'],['parcial',`🟠 Pagos parcial (${D.receber.filter(r=>r.parcial).length}) · falta ${money(D.receber.filter(r=>r.parcial).reduce((a,r)=>a+(r.saldo||0),0))}`],['todos','Todos']],f)}<span class="sp"></span><button class="btn" data-act="addrec">Cadastrar recebimento</button></div>
+    ${tabela(rs.map(r=>linhaReceber(r,LI)),{dataLabel:'Vencimento',fid:'receber'})}`;
 }
 
 /* ============ gráfico: vendas por condição de pagamento ============ */
@@ -733,6 +756,43 @@ function graficoCondicoes(C,titulo){
     <div class="cond-leg">${gs.map(x=>`<button class="cond-row" data-act="det" data-k="cond" data-f="${esc(x.label)}"><i style="background:${x.cor}"></i><span class="nm">${esc(x.label)}<span class="small">${x.itens.length} lançamento(s)</span></span>
       <span class="br"><span style="width:${Math.max(2,100*x.total/gs[0].total)}%;background:${x.cor}"></span></span><span class="vl">${money(x.total)}<span class="small">${(100*x.total/tot).toFixed(1).replace('.',',')}%</span></span></button>`).join('')}</div></div></section>`;
 }
+/* ============ aba Serviços: dinheiro recebido que não é venda de peças ============ */
+function vServicos(C){
+  const ents=C.serv.slice().sort((a,b)=>a.date.localeCompare(b.date));
+  const man=C.servMan.slice().sort((a,b)=>a.date.localeCompare(b.date));
+  const tot=sum(ents)+sum(man);
+  const rows=[...ents.map(e=>({cliente:clienteDaEntrada(e),sub:(e.motivo&&e.motivo!=='Serviço'?e.motivo+' · ':'')+e.desc,valor:e.valor,data:e.date,doc:'Entrada no banco',st:'serv',act:`data-act="conc" data-id="${e.id}"`,forma:e.forma,item:e})),
+    ...man.map(linhaServ)];
+  const porForma={}; rows.forEach(r=>{ porForma[r.forma]=(porForma[r.forma]||0)+r.valor; });
+  const cand=C.ni.concat(C.conf).sort((a,b)=>a.date.localeCompare(b.date));
+  return `<h1 class="page">Serviços</h1><p class="lede">Dinheiro recebido que não é venda de peças: serviços prestados, mão de obra, locação etc. Não entra no total de vendas, mas aparece aqui e no relatório.</p>
+    <div class="minis" style="margin-bottom:14px">
+      <div class="mini g"><span>Total de serviços no período</span><b>${money(tot)}</b></div>
+      <div class="mini"><span>Pelo banco</span><b>${money(sum(ents))}</b></div>
+      <div class="mini"><span>Cadastrados (dinheiro, cartão…)</span><b>${money(sum(man))}</b></div>
+      <div class="mini"><span>Por forma</span><b style="font-size:13px;font-stretch:100%;font-weight:600">${Object.keys(porForma).map(f=>`${esc(f)} ${money(porForma[f])}`).join(' · ')||'—'}</b></div>
+    </div>
+    <div class="toolbar"><button class="btn primary" data-act="addserv">Cadastrar serviço</button><span class="statusline">Para marcar um Pix ou transferência do extrato como serviço, use "É serviço" na lista abaixo ou na janela de conferência.</span></div>
+    ${rows.length?tabela(rows,{fid:'serv'}):'<div class="panel empty">Nenhum serviço no período.</div>'}
+    ${cand.length?`<section class="block"><h2>Entradas do banco sem venda identificada</h2><p class="sub">Se alguma delas for pagamento de serviço, marque aqui.</p>
+      <div class="scroll"><table><thead><tr><th>Pagador</th><th class="num">Valor</th><th>Data</th><th>Forma</th><th>Status</th><th></th></tr></thead><tbody>
+      ${cand.map(e=>`<tr><td><b>${esc(e.pagador||e.desc.slice(0,50))}</b><span class="small">${esc(e.desc.slice(0,80))}</span></td><td class="num"><b>${money(e.valor)}</b></td><td>${br(e.date)}</td><td>${esc(e.forma)}</td><td>${stHtml(e.st)}</td>
+        <td><button class="btn sm" data-act="marcarserv" data-id="${e.id}">É serviço</button></td></tr>`).join('')}</tbody></table></div></section>`:''}`;
+}
+function marcarServico(e,desc){ e.links=[]; e.st='serv'; e.manual=true; e.auto=false; e.motivo=desc||'Serviço'; touch('entradas',e); salvarConc(e); }
+function pedirDescServico(){ const d=prompt('Descrição do serviço (opcional): ex. mão de obra, locação, frete…',''); return d===null?null:(d.trim()||'Serviço'); }
+function dlgServico(id){
+  const x=id?IDX[id]:null; const dlg=$('#dlg'); dlg.className='narrow'; S.dlgKind='serv';
+  dlg.innerHTML=`<div class="dlg-h"><div><h3>${x?'Editar serviço':'Cadastrar serviço'}</h3><p>Recebimento de serviço que não passou pelo extrato (dinheiro, cartão…) ou que você quer registrar à mão.</p></div><button class="btn sm" data-act="close">Fechar</button></div>
+  <div class="dlg-b"><div class="map" style="grid-template-columns:1fr 1fr">
+    <label>Cliente<input id="sCli" class="search" value="${esc(x?x.cliente:'')}"></label><label>Valor (R$)<input id="sVal" class="search" inputmode="decimal" placeholder="0,00" value="${x?(x.valor/100).toFixed(2).replace('.',','):''}"></label>
+    <label>Data<input id="sDt" class="search" type="date" value="${x?x.date:(S.tab==='dia'?S.dia:HOJE)}"></label>
+    <label>Forma<select id="sForma" class="search">${['Dinheiro','Pix','Cartão','Transferência','Boleto','Cheque','Outros'].map(f=>`<option ${x&&x.forma===f?'selected':''}>${f}</option>`).join('')}</select></label>
+    <label class="full" style="grid-column:1/-1">Descrição<input id="sDesc" class="search" value="${esc(x?x.desc:'')}" placeholder="ex.: mão de obra, instalação, locação"></label>
+    <label>Nº documento (opcional)<input id="sDoc" class="search" value="${esc(x?x.doc:'')}"></label>
+  </div></div><div class="dlg-f">${x?`<button class="btn danger" data-act="servdel" data-id="${x.id}">Excluir</button><span class="sp"></span>`:''}<button class="btn" data-act="close">Cancelar</button><button class="btn primary" data-act="servsalvar" data-id="${x?x.id:''}">Salvar</button></div>`;
+  if(!dlg.open) dlg.showModal();
+}
 /* ============ detalhamento (clique nos totais) ============ */
 function abrirDet(k,f){
   const C=S._C; let titulo='',sub='',rows=[],grupos=null,dl='Data';
@@ -740,6 +800,8 @@ function abrirDet(k,f){
   if(k==='vendas'){ titulo='Vendas'; sub='Toque numa forma para filtrar.'; rows=C.vendas.map(linhaVenda); grupos=[...new Set(C.vendas.map(v=>v.forma))]; }
   else if(k==='recebido'){ titulo='Recebimentos por forma'; sub='Pix, transferência, boleto e depósito pelo extrato; dinheiro e cartão pelas vendas.';
     FORMAS_R.forEach(fm=>C.porForma[fm].itens.forEach(i=>rows.push(Object.assign(linhaItem(i,LI),{forma:fm})))); grupos=FORMAS_R.filter(fm=>C.porForma[fm].total); }
+  else if(k==='parciais'){ titulo='Títulos pagos parcialmente'; sub='Valor pago no período e o saldo que ainda falta receber de cada título.'; rows=D.receber.filter(r=>r.parcial&&inP(r.dataBaixa)).map(r=>Object.assign(linhaReceber(r,LI),{data:r.dataBaixa})); }
+  else if(k==='serv'){ titulo='Serviços'; sub='Recebimentos de serviço (não são venda de peças).'; rows=[...C.serv.map(e=>Object.assign(linhaEntrada(e),{st:'serv'})),...C.servMan.map(linhaServ)]; }
   else if(k==='cond'){ titulo='Vendas · '+f; sub='Clientes e pedidos vendidos nesta condição de pagamento.'; rows=C.vendas.filter(v=>condicaoGrupo(v)===f).sort((a,b)=>b.valor-a.valor).map(linhaVenda); }
   else if(k==='forma'){ const fs=String(f).split('|').filter(x=>C.porForma[x]); titulo=fs.length>1?fs.join(' / '):f; sub='Todos os lançamentos que formam este total.';
     rows=fs.flatMap(fm=>C.porForma[fm].itens.map(i=>Object.assign(linhaItem(i,LI),{forma:fm}))); if(fs.length>1) grupos=fs.filter(fm=>C.porForma[fm].itens.length); if(f===BSB) sub='Títulos baixados no período sem forma de recebimento informada. Escolha a forma na coluna Forma: o título sai daqui e vai para a forma escolhida (Dinheiro, Cartão, Pix…).'; }
@@ -757,7 +819,7 @@ function desenhaDet(){ S.dlgKind='det';
   const dlg=$('#dlg'); dlg.className='';
   dlg.innerHTML=`<div class="dlg-h"><div><h3>${esc(d.titulo)}</h3><p>${esc(d.sub)}</p></div><div style="text-align:right"><div class="tot">${money(sum(rows))}</div><button class="btn sm" data-act="close">Fechar</button></div></div>
   <div class="dlg-b">${d.grupos&&d.grupos.length>1?`<div class="toolbar">${`<div class="chips">${[['todos',`Todos (${d.rows.length})`],...d.grupos.map(g=>[g,`${g} · ${money(sum(d.rows.filter(r=>r.forma===g)))}`])].map(([k,l])=>`<button data-act="detg" data-v="${esc(k)}" aria-pressed="${d.g===k}">${esc(l)}</button>`).join('')}</div>`}</div>`:''}
-  ${tabela(rows,{dataLabel:d.dl})}</div>`;
+  ${tabela(rows,{dataLabel:d.dl,fid:'det'})}</div>`;
   if(!dlg.open) dlg.showModal();
 }
 
@@ -788,6 +850,7 @@ function desenhaConc(){ S.dlgKind='cc';
   </div>
   <div class="dlg-f"><span class="sumline">Selecionado <b>${money(selTot)}</b> · diferença <b class="${dif===0?'ok':'bad'}">${money(dif)}</b></span><span class="sp"></span>
     <button class="btn" data-act="close">Cancelar</button>
+    <button class="btn" data-act="ccserv" title="Pagamento de serviço prestado (mão de obra, locação…)">É serviço</button>
     <button class="btn" data-act="ccout" title="Transferência entre contas próprias, estorno, empréstimo etc.">Não é venda</button>
     ${e.st!=='ni'?'<button class="btn danger" data-act="ccni">Marcar não identificado</button>':''}
     <button class="btn primary" data-act="ccok" ${S.cc.sel.size?'':'disabled'}>Confirmar conciliação</button></div>`;
@@ -851,7 +914,7 @@ function vDia(C){
       <input class="search" id="dq" placeholder="Pesquisar cliente, documento ou valor" value="${esc(S.dq||'')}" style="width:100%;margin-bottom:8px">
       <div class="lista">${cands.length?cands.map(k=>`<div class="cand ${sel.has(k.x.id)?'sel':''}" data-act="ditem" data-id="${k.x.id}" tabindex="0"><input type="checkbox" ${sel.has(k.x.id)?'checked':''} tabindex="-1" aria-hidden="true"><span><b>${esc(k.x.cliente)}</b><span class="small">${esc(descAlvo(k.x))}${k.valorOk?' · mesmo valor':''}${k.ns>=0.5?' · nome confere':''}</span></span><span class="v">${money(k.x.valor)}</span></div>`).join(''):'<div class="empty">Nada encontrado. Pesquise pelo nome ou valor.</div>'}</div>
       <div class="linkbar"><span class="sumline">Selecionado <b>${money(tot)}</b> · diferença <b class="${dif===0?'ok':'bad'}">${money(dif)}</b></span><span class="sp"></span>
-        <button class="btn" data-act="dout">Não é venda</button><button class="btn primary" data-act="dlink" ${sel.size?'':'disabled'}>Vincular</button></div>`;
+        <button class="btn" data-act="dserv">É serviço</button><button class="btn" data-act="dout">Não é venda</button><button class="btn primary" data-act="dlink" ${sel.size?'':'disabled'}>Vincular</button></div>`;
   } else {
     const it=[...vendasPend.map(v=>({x:v,t:'Venda sem Pix no banco'})),...baixasPend.map(r=>({x:r,t:'Baixa sem forma informada'}))];
     direita=`<div class="colh"><div><b>O sistema diz que recebeu</b><span class="small">Vendas no Pix/transferência e títulos baixados no dia ainda sem entrada no banco. Toque para procurar o crédito.</span></div></div>
@@ -872,12 +935,12 @@ function vDia(C){
     <section class="block"><h2>2. Resumo do dia</h2><div class="minis">
       ${kpi('Vendas',money(C.tVendas),'','vendas')}${kpi('Entrou no banco',money(C.tEntradas),'','entradas')}${kpi('🟢 Conciliado',money(sum(C.ok)),'g','ok')}
       ${kpi('🟡 Conferir',money(sum(C.conf)),'a','conf')}${kpi('🔴 Não identificado',money(sum(C.ni)),'r','ni')}${kpi('Baixas sem forma',money(C.porForma[BSB].total),C.porForma[BSB].total?'a':'','forma',BSB)}
-      ${kpi('Dinheiro (caixa)',money(C.porForma['Dinheiro'].total),'','forma','Dinheiro')}${kpi('Cartão (maquininha)',money(C.porForma['Cartão'].total),'','forma','Cartão')}${kpi('Pix',money(C.porForma['Pix'].total),'','forma','Pix')}${kpi('Transferência / boleto',money(C.porForma['Transferência'].total+C.porForma['Boleto'].total+C.porForma['Depósito'].total),'','forma','Transferência|Boleto|Depósito')}</div></section>
+      ${kpi('Dinheiro (caixa)',money(C.porForma['Dinheiro'].total),'','forma','Dinheiro')}${kpi('Cartão (maquininha)',money(C.porForma['Cartão'].total),'','forma','Cartão')}${(()=>{ const ps=rD.filter(r=>r.parcial); return ps.length?`<button class="mini a" data-act="det" data-k="parciais"><span>🟠 Pagos parcial (${ps.length})</span><b>${money(sum(ps))}</b><span>falta ${money(ps.reduce((a,r)=>a+(r.saldo||0),0))}</span></button>`:''; })()}${kpi('🔵 Serviços',money(sum(C.serv)+sum(C.servMan)),'','serv')}${kpi('Pix',money(C.porForma['Pix'].total),'','forma','Pix')}${kpi('Transferência / boleto',money(C.porForma['Transferência'].total+C.porForma['Boleto'].total+C.porForma['Depósito'].total),'','forma','Transferência|Boleto|Depósito')}</div></section>
     ${graficoCondicoes(C,'Vendas do dia por condição de pagamento')}
     <section class="block"><h2>3. Vincular</h2><p class="sub">À esquerda, o dinheiro que entrou no banco. À direita, quem pagou: escolha a venda ou o título e toque em Vincular.</p>
       <div class="board"><div class="col">${esquerda}</div><div class="col">${direita}</div></div></section>
     <section class="block"><h2>4. Formas de recebimento do dia</h2><p class="sub">Vendas e títulos baixados no dia. Se a forma foi lançada errada no sistema, troque aqui: o painel e a conciliação são refeitos na hora.</p>
-      ${tabela([...vD.map(linhaVenda),...rD.map(r=>Object.assign(linhaReceber(r,LI),{data:r.dataBaixa}))])}</section>
+      ${tabela([...vD.map(linhaVenda),...rD.map(r=>Object.assign(linhaReceber(r,LI),{data:r.dataBaixa}))],{fid:'dia'})}</section>
     ${okE.length?`<section class="block"><h2>5. Vinculados hoje</h2><div class="scroll"><table><thead><tr><th>Cliente</th><th class="num">Valor</th><th>Venda / documento</th><th>Status</th><th></th></tr></thead><tbody>
       ${okE.map(e=>`<tr><td><b>${esc(clienteDaEntrada(e))}</b><span class="small">${esc(e.pagador||e.desc).slice(0,60)}</span></td><td class="num"><b>${money(e.valor)}</b></td><td>${esc((e.links||[]).map(refDe).join(', ')||'—')}<span class="small">${esc(e.motivo||'')}</span></td><td>${stHtml(e.st)}</td><td><button class="btn sm" data-act="desfaz" data-id="${e.id}">Desfazer</button></td></tr>`).join('')}
       </tbody></table></div></section>`:''}`;
@@ -980,12 +1043,15 @@ function lerReceber(L){
     if(/^Qtd\. Registros/i.test(l)){ nome=[]; cli=''; continue; }
     const r=/^(\d{2}\/\d{2}\/\d{4}) (\S+) (\S+) (.+?) (?:(\d{2}\/\d{2}\/\d{4}) )?(\d{2}\/\d{2}\/\d{4}) ([\d.]+,\d{2}) ([\d.]+,\d{2}) ([\d.]+,\d{2}) ([\d.]+,\d{2})$/.exec(l);
     if(r){ if(nome.length){ cli=nome.join(' ').replace(/\s+/g,' ').trim(); nome=[]; }
-      const status=r[4], pago=/PAGO TOTAL|QUITAD|LIQUIDAD/i.test(pnorm(status)), dataPag=r[5]?b2i(r[5]):'';
+      const status=r[4], parcial=/PARCIAL/i.test(pnorm(status)), pago=parcial||/PAGO TOTAL|QUITAD|LIQUIDAD/i.test(pnorm(status)), dataPag=r[5]?b2i(r[5]):'';
       const saldo=pMoney(r[9]), vt=pMoney(r[10]), vp=pMoney(r[7]), juros=pMoney(r[8]);
-      const valor=pago?(vp||vt)+juros:(saldo||vt);
+      const valor=pago?(parcial?vp:(vp||vt))+juros:(saldo||vt);
       const venc=b2i(r[6]);
-      it.push({col:'receber',id:'r'+hashStr(`${r[2]}|${venc}|${pago?vt:valor}`),titulo:r[3],doc:r[3],pedido:r[2],emissao:b2i(r[1]),venc,valor,cliente:cli||'Cliente não informado',
-        baixado:pago,dataBaixa:pago?dataPag:'',status,origem:'contas',juros,valorAlt:juros?(vp||vt):0}); continue; }
+      // pago parcial: cada pagamento parcial é um registro próprio (título + data + valor pago); guarda o saldo que falta
+      const idBase=parcial?`${r[2]}|${r[3]}|${venc}|P|${dataPag}|${vp}`:`${r[2]}|${venc}|${pago?vt:valor}`;
+      it.push({col:'receber',id:'r'+hashStr(idBase),titulo:r[3],doc:r[3],pedido:r[2],emissao:b2i(r[1]),venc,valor,cliente:cli||'Cliente não informado',
+        baixado:pago,dataBaixa:pago?dataPag:'',status,origem:'contas',juros,valorAlt:juros?(parcial?vp:(vp||vt)):0,
+        parcial,saldo:parcial?saldo:0,valorTit:vt}); continue; }
     const idx=segs.findIndex(s=>/^(Cr[ée]dito|Total)$/i.test(s)); const np=(idx===-1?segs:segs.slice(0,idx)).join(' ').trim();
     if(np&&!/^(Cr[ée]dito|Total|Saldo)/i.test(np)) nome.push(np); }
   return it;
@@ -1044,8 +1110,8 @@ function gerarPdf(){
   const W=210,M=12; let y;
   const G=[46,106,69],GS=[225,235,227],AM=[156,98,16],RD=[163,63,42],BL=[44,90,134],INK=[23,32,27],MUT=[95,107,100];
   const m=c=>money(c).replace(/\u00a0/g,' ');
-  const STP={ok:'Conciliado',conf:'Conferir',ni:'Não identificado',out:'Outra entrada',caixa:'Caixa',maq:'Maquininha',prazo:'A prazo',nao:'Não entrou',aberto:'Previsto',atraso:'Atrasado',recebido:'Recebido'};
-  const COR={ok:G,conf:AM,ni:RD,nao:RD,atraso:RD,recebido:G,out:BL};
+  const STP={serv:'Serviço',ok:'Conciliado',conf:'Conferir',ni:'Não identificado',out:'Outra entrada',caixa:'Caixa',maq:'Maquininha',prazo:'A prazo',nao:'Não entrou',aberto:'Previsto',atraso:'Atrasado',recebido:'Recebido'};
+  const COR={serv:[122,75,168],ok:G,conf:AM,ni:RD,nao:RD,atraso:RD,recebido:G,out:BL};
   const T=o=>{ doc.autoTable(Object.assign({startY:y,margin:{left:M,right:M,top:14},theme:'grid',rowPageBreak:'avoid',showFoot:'lastPage',
     styles:{font:'helvetica',fontSize:8,cellPadding:1.4,lineColor:[205,212,207],lineWidth:.15,textColor:INK},headStyles:{fillColor:G,textColor:255,fontStyle:'bold'},footStyles:{fillColor:GS,textColor:INK,fontStyle:'bold'}},o)); y=doc.lastAutoTable.finalY+7; };
   const H=(t,s)=>{ if(y>250){doc.addPage();y=16;} doc.setFont('helvetica','bold');doc.setFontSize(11.5);doc.setTextColor(...INK);doc.text(t,M,y); y+=2;
@@ -1083,6 +1149,14 @@ function gerarPdf(){
   if(difs.length) T({head:[['Tipo','Data','Cliente / pagador','Documento','Valor']],body:difs,columnStyles:{0:{cellWidth:44,fontStyle:'bold',textColor:RD},1:{cellWidth:18},3:{cellWidth:34},4:{halign:'right',cellWidth:24}},didParseCell:d=>{ if(d.section==='head'&&d.column.index===4) d.cell.styles.halign='right'; }});
   else { doc.setFontSize(9); doc.setTextColor(...G); doc.text('Nenhuma diferença no período.',M,y); y+=8; }
   // detalhamento dos pagamentos
+  { const sv=[...C.serv.map(e=>[brs(e.date),'Banco · '+e.forma,clienteDaEntrada(e),(e.motivo&&e.motivo!=='Serviço'?e.motivo:'Serviço'),m(e.valor)]),...C.servMan.map(x=>[brs(x.date),'Cadastrado · '+x.forma,x.cliente,x.desc||'Serviço',m(x.valor)])];
+    const pp=D.receber.filter(r=>r.parcial&&inP(r.dataBaixa));
+    if(pp.length){ H('Títulos pagos parcialmente','Quanto foi pago no período e o saldo que ainda falta receber.');
+      T({head:[['Pagamento','Cliente','Título','Valor do título','Pago','Saldo restante']],body:pp.map(r=>[brs(r.dataBaixa),r.cliente,r.doc||'—',m(r.valorTit),m(r.valor),m(r.saldo)]),
+        foot:[[{content:`${pp.length} título(s)`,colSpan:3},m(pp.reduce((a,r)=>a+r.valorTit,0)),m(sum(pp)),m(pp.reduce((a,r)=>a+(r.saldo||0),0))]],
+        columnStyles:{0:{cellWidth:18},3:{halign:'right'},4:{halign:'right'},5:{halign:'right',fontStyle:'bold',textColor:AM}},didParseCell:d=>{ if(d.section!=='body'&&d.column.index>=3) d.cell.styles.halign='right'; }}); }
+    if(sv.length){ H('Recebimentos de serviço','Dinheiro recebido que não é venda de peças.');
+      T({head:[['Data','Origem','Cliente','Descrição','Valor']],body:sv,foot:[[{content:`${sv.length} lançamento(s)`,colSpan:4},m(sum(C.serv)+sum(C.servMan))]],columnStyles:{0:{cellWidth:12},4:{halign:'right',cellWidth:24}},didParseCell:d=>{ if(d.section!=='body'&&d.column.index===4) d.cell.styles.halign='right'; }}); } }
   H('Detalhamento das entradas no banco','Cada crédito do extrato com o cliente, a venda ou o título correspondente e o status.');
   const es=C.entradas.slice().sort((a,b)=>a.date.localeCompare(b.date)||a.forma.localeCompare(b.forma));
   T({head:[['Data','Forma','Cliente','Venda / documento','Valor','Status']],body:es.map(e=>[brs(e.date),e.forma,clienteDaEntrada(e)+(e.pagador&&clienteDaEntrada(e)!==e.pagador?'\n(pagador: '+e.pagador+')':''),(e.links||[]).map(refDe).join(', ')||'—',m(e.valor),stCol(e.st)]),
@@ -1140,6 +1214,7 @@ document.addEventListener('click',async ev=>{
     case 'desfaz': { const e=IDX[id]; if(!e) break; e.links=[]; e.st='ni'; e.auto=false; e.manual=true; e.motivo='Vínculo desfeito'; touch('entradas',e); salvarConc(e); refresh(e.id); toast('Vínculo desfeito. A entrada voltou para 🔴 Não identificado.'); break; }
     case 'det': abrirDet(t.dataset.k,t.dataset.f); break;
     case 'detg': S.det.g=t.dataset.v; desenhaDet(); break;
+    case 'origem': { S.orig=S.orig||{}; S.orig[t.dataset.fid]=t.dataset.v; if(t.dataset.fid==='det'&&$('#dlg').open) desenhaDet(); else refresh(); break; }
     case 'close': $('#dlg').close(); render(); break;
     case 'filtro': S.filtro[t.dataset.n]=t.dataset.v; render(); break;
     case 'conc': abrirConc(id); break;
@@ -1147,6 +1222,18 @@ document.addEventListener('click',async ev=>{
     case 'alvopick': { const e=IDX[t.dataset.e]; abrirConc(e.id,[...(e.st==='ok'?e.links:[]),id]); break; }
     case 'ccsel': { const sc=($('#dlg .dlg-b')||{}).scrollTop||0; S.cc.sel.has(id)?S.cc.sel.delete(id):S.cc.sel.add(id); desenhaConc(); const b=$('#dlg .dlg-b'); if(b) b.scrollTop=sc; break; }
     case 'ccok': { const e=IDX[S.cc.id]; e.links=[...S.cc.sel]; e.st='ok'; e.auto=false; e.manual=true; e.motivo='Conferido manualmente'; touch('entradas',e); salvarConc(e); S._noRender=true; $('#dlg').close(); S._noRender=false; refresh(e.id); agendarConciliacao(); toast(`🟢 Conciliado: ${money(e.valor)} de ${clienteDaEntrada(e)}.`); break; }
+    case 'ccserv': { const e=IDX[S.cc.id]; const d=pedirDescServico(); if(d===null) break; marcarServico(e,d); S._noRender=true; $('#dlg').close(); S._noRender=false; refresh(e.id); toast(`🔵 ${money(e.valor)} marcado como serviço.`); break; }
+    case 'dserv': { const e=IDX[S.selE]; if(!e) break; const d=pedirDescServico(); if(d===null) break; marcarServico(e,d); S.selE=null; refresh(e.id); toast(`🔵 ${money(e.valor)} marcado como serviço.`); break; }
+    case 'marcarserv': { const e=IDX[id]; if(!e) break; const d=pedirDescServico(); if(d===null) break; marcarServico(e,d); refresh(e.id); toast(`🔵 ${money(e.valor)} marcado como serviço.`); break; }
+    case 'addserv': dlgServico(null); break;
+    case 'servedit': dlgServico(id); break;
+    case 'servsalvar': { const cli=$('#sCli').value.trim(), pv=parseValor($('#sVal').value), dt=$('#sDt').value;
+      if(!cli||!pv||!pv.c||!dt){ toast('Preencha cliente, valor e data.'); break; }
+      let x=id?IDX[id]:null; const antigo=x?x.date:null;
+      if(!x){ x={col:'servicos',id:'sm'+Math.random().toString(36).slice(2,9)}; D.servicos.push(x); }
+      Object.assign(x,{date:dt,valor:Math.abs(pv.c),cliente:cli,forma:$('#sForma').value,desc:$('#sDesc').value.trim(),doc:$('#sDoc').value.trim()});
+      if(antigo&&antigo!==dt) markDirty('servicos',antigo); touch('servicos',x); reindex(); S._noRender=true; $('#dlg').close(); S._noRender=false; refresh(x.id); toast('Serviço salvo.'); break; }
+    case 'servdel': { const x=IDX[id]; if(!x||!confirm('Excluir este serviço?')) break; D.servicos=D.servicos.filter(y=>y.id!==id); markDirty('servicos',x.date); reindex(); S._noRender=true; $('#dlg').close(); S._noRender=false; refresh(); break; }
     case 'ccout': { const e=IDX[S.cc.id]; e.links=[]; e.st='out'; e.manual=true; e.motivo='Marcado como outra entrada (não é venda)'; touch('entradas',e); salvarConc(e); S._noRender=true; $('#dlg').close(); S._noRender=false; refresh(e.id); agendarConciliacao(); break; }
     case 'ccni': { const e=IDX[S.cc.id]; e.links=[]; e.st='ni'; e.manual=true; e.motivo='Marcado manualmente'; touch('entradas',e); salvarConc(e); S._noRender=true; $('#dlg').close(); S._noRender=false; refresh(e.id); break; }
     case 'auto': { D.entradas.forEach(e=>{ if(e.st!=='ok'||e.auto){ if(!e.manual){ e.st='ni'; e.links=[]; } } }); const r=conciliarAuto(); render(); toast(`Conciliação: 🟢 ${r.ok||0} · 🟡 ${r.conf||0} · 🔴 ${r.ni||0}.`); break; }
@@ -1163,7 +1250,7 @@ document.addEventListener('click',async ev=>{
       for(const col of COLS){ D[col]=[]; } for(const c in dirty) dirty[c].clear(); if(!db){ for(let i=localStorage.length-1;i>=0;i--){ const k=localStorage.key(i); if(k&&k.startsWith('conc:')) localStorage.removeItem(k); } }
       AJ.formas={}; AJ.conc={}; if(db){ try{ for(const col of COLS){ const sn=await db.collection(col).get(); const refs=sn.docs.map(d=>d.ref); for(let i=0;i<refs.length;i+=400){ const b=db.batch(); refs.slice(i,i+400).forEach(r=>b.delete(r)); await b.commit(); } } await db.doc('ajustes/manual').delete(); }catch(e){ toast('Não consegui limpar o Firebase: '+traduzErro(e)); break; } } else { try{ localStorage.removeItem('conc:ajustes'); }catch(e){} } render(); toast('Todos os dados foram apagados.'); break; }
     case 'recarregar': recarregarDaPlanilha(false); break;
-    case 'bkexp': { const bk={app:'conciliacao-pagil',versao:1,gerado:new Date().toISOString(),dados:{entradas:D.entradas,vendas:D.vendas,receber:D.receber},ajustes:AJ};
+    case 'bkexp': { const bk={app:'conciliacao-pagil',versao:1,gerado:new Date().toISOString(),dados:{entradas:D.entradas,vendas:D.vendas,receber:D.receber,servicos:D.servicos},ajustes:AJ};
       const limpo=JSON.stringify(bk,(k,v)=>k&&k[0]==='_'?undefined:v); await baixar(`backup-conciliacao-${HOJE}.json`,limpo,'application/json'); break; }
     case 'bkimp': $('#bkInput').click(); break;
   }
