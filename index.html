@@ -391,8 +391,15 @@ function aplicarAjustes(){
 }
 function mesclarAjustes(rem){ let mudou=false;
   for(const c of ['formas','conc']){ const R=(rem&&rem[c])||{}; for(const id in R){ if(pendAJ.has(c+':'+id)) continue; const L=AJ[c][id];
-    if(!L||String(R[id].t||'')>String(L.t||'')){ if(JSON.stringify(L)!==JSON.stringify(R[id])){ AJ[c][id]=R[id]; mudou=true; } } } }
+    if(!L||String(R[id].t||'')>String(L.t||'')){ if(JSON.stringify(L)!==JSON.stringify(R[id])){ AJ[c][id]=R[id]; mudou=true; } } }
+    // ajustes apagados em outro aparelho (ex.: "Apagar lançamentos do dia")
+    if(rem&&rem[c]) for(const id in AJ[c]){ if(!(id in R)&&!pendAJ.has(c+':'+id)){ delete AJ[c][id]; mudou=true; } } }
   return mudou; }
+async function removerAjustes(ids){
+  const upd={}; for(const c of ['formas','conc']) for(const id of ids) if(AJ[c][id]){ delete AJ[c][id]; pendAJ.delete(c+':'+id); upd[c+'.'+id]=db?firebase.firestore.FieldValue.delete():null; }
+  if(!Object.keys(upd).length) return true;
+  if(db){ try{ await db.doc('ajustes/manual').update(upd); return true; }catch(e){ Sync.err=traduzErro(e); return false; } }
+  try{ localStorage.setItem('conc:ajustes',JSON.stringify(AJ)); }catch(e){} return true; }
 async function gravarAjuste(campo,id,valor){
   AJ[campo][id]=valor; const pk=campo+':'+id; pendAJ.add(pk); Sync.state='pend'; syncUI();
   let ok=false, erro='';
@@ -983,6 +990,56 @@ function sugestoes(e,q,sel){
   return cands.slice(0,40);
 }
 function descAlvo(x){ return x.col==='vendas'?`Venda ${x.doc||'—'} · ${brs(x.date)} · ${x.forma}`:x.baixado?`Título ${x.doc||'—'} · baixado ${brs(x.dataBaixa)}`:`Título ${x.doc||'—'} · vence ${brs(x.venc)}`; }
+/* ---- apagar os lançamentos de um dia para importar de novo ---- */
+function itensDoDia(d){
+  return {entradas:D.entradas.filter(e=>e.date===d), vendas:D.vendas.filter(v=>v.date===d),
+    prazo:D.receber.filter(r=>r.origem==='venda'&&r.emissao===d&&!r.baixado),
+    receber:D.receber.filter(r=>r.baixado&&r.dataBaixa===d),
+    saidas:D.saidas.filter(x=>x.date===d), servicos:D.servicos.filter(x=>x.date===d)};
+}
+function dlgApagarDia(){
+  const d=S.dia; const it=itensDoDia(d); const dlg=$('#dlg'); dlg.className='narrow'; S.dlgKind='apagar';
+  const op=(k,l,n,v,chk)=>`<label class="chk" style="display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--line)"><input type="checkbox" id="ap_${k}" ${chk&&n?'checked':''} ${n?'':'disabled'}><span><b>${l}</b><span class="small">${n?`${n} lançamento(s) · ${money(v)}`:'nada neste dia'}</span></span></label>`;
+  const nAj=[...it.entradas,...it.vendas,...it.prazo,...it.receber].filter(x=>AJ.formas[x.id]||AJ.conc[x.id]).length;
+  dlg.innerHTML=`<div class="dlg-h"><div><h3>Apagar lançamentos de ${br(d)}</h3><p>Use quando algum PDF entrou errado. Depois é só soltar os PDFs do dia de novo.</p></div><button class="btn sm" data-act="close">Fechar</button></div>
+  <div class="dlg-b">
+    ${op('entradas','Extrato do banco (Sicoob / Bradesco)',it.entradas.length,sum(it.entradas),true)}
+    ${op('vendas','Vendas do dia (Listar Pedido por Data)',it.vendas.length+it.prazo.length,sum(it.vendas),true)}
+    ${op('receber','Contas a Receber baixados no dia',it.receber.length,sum(it.receber),true)}
+    ${op('saidas','Saídas de dinheiro lançadas à mão',it.saidas.length,sum(it.saidas),false)}
+    ${op('servicos','Serviços cadastrados à mão',it.servicos.length,sum(it.servicos),false)}
+    <label class="chk" style="display:flex;gap:10px;align-items:flex-start;padding:10px 0"><input type="checkbox" id="ap_aj" ${nAj?'checked':''} ${nAj?'':'disabled'}><span><b>Apagar também as correções feitas à mão</b><span class="small">${nAj?`${nAj} lançamento(s) com forma trocada ou vínculo manual. Desmarque para que as correções voltem sozinhas quando você importar de novo.`:'Nenhuma correção manual neste dia.'}</span></span></label>
+    <p class="statusline">Vínculos de entradas de outros dias com vendas ou títulos apagados são desfeitos. Até você sair do app dá para desfazer.</p>
+  </div><div class="dlg-f"><span class="sp"></span><button class="btn" data-act="close">Cancelar</button><button class="btn danger" data-act="apagardiaok">Apagar</button></div>`;
+  if(!dlg.open) dlg.showModal();
+}
+async function apagarDia(d,sel,limparAj){
+  const it=itensDoDia(d); const rem={};
+  if(sel.entradas) rem.entradas=it.entradas; if(sel.vendas){ rem.vendas=it.vendas; rem.receberPrazo=it.prazo; }
+  if(sel.receber) rem.receber=it.receber; if(sel.saidas) rem.saidas=it.saidas; if(sel.servicos) rem.servicos=it.servicos;
+  const lista=Object.values(rem).flat(); if(!lista.length) return null;
+  const ids=new Set(lista.map(x=>x.id));
+  const undo={d,itens:lista.map(x=>JSON.parse(JSON.stringify(x,(k,v)=>k&&k[0]==='_'?undefined:v))),aj:{formas:{},conc:{}},links:[]};
+  for(const id of ids) for(const c of ['formas','conc']) if(AJ[c][id]) undo.aj[c][id]=AJ[c][id];
+  // entradas de outros dias que apontavam para o que foi apagado
+  D.entradas.forEach(e=>{ if(ids.has(e.id)||!(e.links||[]).some(l=>ids.has(l))) return;
+    undo.links.push({id:e.id,st:e.st,links:e.links.slice(),motivo:e.motivo||'',manual:!!e.manual,auto:!!e.auto});
+    e.links=e.links.filter(l=>!ids.has(l)); if(!e.links.length&&(e.st==='ok'||e.st==='conf')){ e.st='ni'; e.motivo=''; e.manual=false; e.auto=false; }
+    touch('entradas',e); if(AJ.conc[e.id]) salvarConc(e); });
+  lista.forEach(x=>touch(x.col,x));
+  for(const col of COLS) D[col]=D[col].filter(x=>!ids.has(x.id));
+  if(limparAj) await removerAjustes([...ids]); else undo.aj={formas:{},conc:{}};
+  reindex(); aplicarAjustes(); conciliarAuto(); await flush();
+  S.ultimoApagado=undo; return lista.length;
+}
+async function desfazerApagar(){
+  const u=S.ultimoApagado; if(!u) return; S.ultimoApagado=null;
+  u.itens.forEach(x=>{ if(!D[x.col].some(y=>y.id===x.id)){ D[x.col].push(x); touch(x.col,x); } });
+  reindex();
+  u.links.forEach(l=>{ const e=IDX[l.id]; if(!e) return; Object.assign(e,{st:l.st,links:l.links.filter(i=>IDX[i]),motivo:l.motivo,manual:l.manual,auto:l.auto}); touch('entradas',e); if(l.manual) salvarConc(e); });
+  for(const c of ['formas','conc']) for(const id in u.aj[c]) await gravarAjuste(c,id,u.aj[c][id]);
+  aplicarAjustes(); conciliarAuto(); await flush(); return u.itens.length;
+}
 function vDia(C){
   const d=S.dia; const dt=new Date(d+'T12:00:00');
   const eD=D.entradas.filter(e=>e.date===d), vD=D.vendas.filter(v=>v.date===d), rD=D.receber.filter(r=>r.baixado&&r.dataBaixa===d);
@@ -1019,7 +1076,8 @@ function vDia(C){
       <span class="sp"></span><button class="btn primary" data-act="pdf">Gerar PDF do dia</button></div>
     <section class="block" style="margin-top:18px"><h2>1. PDFs do dia</h2>
       <div class="steps">${pdfs.map(p=>`<div class="step ${p[1]?'done':''}"><span class="ck">${p[1]?'✓':'!'}</span><span><b>${p[0]}</b><span class="small">${p[1]?p[2]:'Ainda não importado'}</span></span></div>`).join('')}
-      <div class="drop" data-act="pick" data-drop="1" tabindex="0" role="button"><b>${faltam?'Soltar PDFs do dia':'Soltar mais PDFs'}</b><span class="small">ou toque para escolher</span></div></div></section>
+      <div class="drop" data-act="pick" data-drop="1" tabindex="0" role="button"><b>${faltam?'Soltar PDFs do dia':'Soltar mais PDFs'}</b><span class="small">ou toque para escolher</span></div></div>
+      <div class="toolbar" style="margin-top:10px">${Object.values(itensDoDia(d)).some(a=>a.length)?'<button class="btn danger" data-act="apagardia">🗑 Apagar lançamentos do dia</button><span class="statusline">Para corrigir um PDF que entrou errado: apague e solte os PDFs de novo.</span>':''}${S.ultimoApagado?`<button class="btn" data-act="desfazerapagar">↩ Desfazer exclusão de ${br(S.ultimoApagado.d)}</button>`:''}</div></section>
     <section class="block"><h2>2. Resumo do dia</h2><div class="minis">
       ${kpi('Vendas',money(C.tVendas),'','vendas')}${kpi('Entrou no banco',money(C.tEntradas),'','entradas')}${kpi('🟢 Conciliado',money(sum(C.ok)),'g','ok')}
       ${kpi('🟡 Conferir',money(sum(C.conf)),'a','conf')}${kpi('🔴 Não identificado',money(sum(C.ni)),'r','ni')}${kpi('Baixas sem forma',money(C.porForma[BSB].total),C.porForma[BSB].total?'a':'','forma',BSB)}
@@ -1391,6 +1449,14 @@ document.addEventListener('click',async ev=>{
       for(const col of COLS){ D[col]=[]; } for(const c in dirty) dirty[c].clear(); if(!db){ for(let i=localStorage.length-1;i>=0;i--){ const k=localStorage.key(i); if(k&&k.startsWith('conc:')) localStorage.removeItem(k); } }
       AJ.formas={}; AJ.conc={}; if(db){ try{ for(const col of COLS){ const sn=await db.collection(col).get(); const refs=sn.docs.map(d=>d.ref); for(let i=0;i<refs.length;i+=400){ const b=db.batch(); refs.slice(i,i+400).forEach(r=>b.delete(r)); await b.commit(); } } await db.doc('ajustes/manual').delete(); }catch(e){ toast('Não consegui limpar o Firebase: '+traduzErro(e)); break; } } else { try{ localStorage.removeItem('conc:ajustes'); }catch(e){} } render(); toast('Todos os dados foram apagados.'); break; }
     case 'recarregar': recarregarDaPlanilha(false); break;
+    case 'apagardia': dlgApagarDia(); break;
+    case 'apagardiaok': { const sel={}; ['entradas','vendas','receber','saidas','servicos'].forEach(k=>{ const c=$('#ap_'+k); sel[k]=!!(c&&c.checked&&!c.disabled); });
+      if(!Object.values(sel).some(Boolean)){ toast('Marque o que deseja apagar.'); break; }
+      const aj=!!($('#ap_aj')&&$('#ap_aj').checked);
+      if(!confirm(`Apagar os lançamentos marcados de ${br(S.dia)}?`)) break;
+      S._noRender=true; $('#dlg').close(); S._noRender=false; S.selE=null;
+      const n=await apagarDia(S.dia,sel,aj); refresh(); toast(n?`🗑 ${n} lançamento(s) de ${br(S.dia)} apagado(s). Agora solte os PDFs do dia de novo.`:'Nada para apagar.',6000); break; }
+    case 'desfazerapagar': { const d=S.ultimoApagado&&S.ultimoApagado.d; const n=await desfazerApagar(); if(d) S.dia=d; refresh(); toast(`↩ ${n||0} lançamento(s) restaurado(s).`); break; }
     case 'bkexp': { const bk={app:'conciliacao-pagil',versao:1,gerado:new Date().toISOString(),dados:{entradas:D.entradas,vendas:D.vendas,receber:D.receber,servicos:D.servicos,saidas:D.saidas},ajustes:AJ};
       const limpo=JSON.stringify(bk,(k,v)=>k&&k[0]==='_'?undefined:v); await baixar(`backup-conciliacao-${HOJE}.json`,limpo,'application/json'); break; }
     case 'bkimp': $('#bkInput').click(); break;
