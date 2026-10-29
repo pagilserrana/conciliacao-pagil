@@ -440,7 +440,7 @@ function touch(col,x){ markDirty(col,gkey(col,x)); }
 async function recarregarDaPlanilha(silencioso){
   if(!db){ if(!silencioso) toast('Modo de teste: os dados estão neste navegador.'); return; }
   await flush();
-  try{ await Store.init(); for(const col of COLS){ D[col]=await Store.loadAll(col); D[col].forEach(x=>x.col=col); } reindex(); await carregarAjustes(); aplicarAjustes();
+  try{ await Store.init(); for(const col of COLS){ D[col]=await Store.loadAll(col); D[col].forEach(x=>x.col=col); } reindex(); await carregarAjustes(); aplicarAjustes(); if(deduplicarParcelas()){ reindex(); aplicarAjustes(); flush(); }
     Sync.state='ok'; syncUI(); refresh(); if(!silencioso) toast('Dados atualizados.'); }
   catch(e){ toast('Não consegui ler o Firebase: '+traduzErro(e),7000); }
 }
@@ -1241,7 +1241,32 @@ function chequeDoContasReceber(){
   D.receber.forEach(r=>{ if(r.formaRec||AJ.formas[r.id]) return; if(r.chequeTxt||(r.pedido&&chPed.has(r.pedido))){ r.formaRec='Cheque'; r.formaAuto=r.chequeTxt?'cheque-cr':'cheque'; touch('receber',r); n++; } });
   return n;
 }
+// parcela a prazo criada pelo Listar Pedido × o mesmo título vindo do Contas a Receber (mesmo pedido e valor):
+// fica só o título do Contas a Receber, e vínculos/correções da parcela passam para ele
+function deduplicarParcelas(){
+  const cr={}; D.receber.forEach(r=>{ if(r.origem!=='venda'&&r.pedido) (cr[r.pedido]=cr[r.pedido]||[]).push(r); });
+  const parc={}; D.receber.forEach(r=>{ if(r.origem==='venda'&&r.pedido&&cr[r.pedido]) (parc[r.pedido]=parc[r.pedido]||[]).push(r); });
+  const fora=new Map();
+  for(const ped in parc){
+    const ps=parc[ped].slice().sort((a,b)=>(a.venc||'').localeCompare(b.venc||'')); const ts=cr[ped].slice().sort((a,b)=>(a.venc||'').localeCompare(b.venc||'')||String(a.titulo||'').localeCompare(String(b.titulo||'')));
+    const usados=new Set();
+    for(const p of ps){
+      const ok=ts.filter(t=>t.id!==p.id&&!usados.has(t.id)&&(t.valor===p.valor||t.valorTit===p.valor||t.valorAlt===p.valor));
+      if(!ok.length) continue;
+      ok.sort((a,b)=>Math.abs(dayDiff(a.venc,p.venc))-Math.abs(dayDiff(b.venc,p.venc)));
+      const t=ok[0]; if(Math.abs(dayDiff(t.venc,p.venc))>45) continue;
+      usados.add(t.id); fora.set(p.id,t); }
+  }
+  if(!fora.size) return 0;
+  D.entradas.forEach(e=>{ if(!(e.links||[]).some(l=>fora.has(l))) return;
+    e.links=[...new Set(e.links.map(l=>fora.has(l)?fora.get(l).id:l))]; touch('entradas',e); if(AJ.conc[e.id]) salvarConc(e); });
+  for(const [pid,t] of fora){ if(AJ.formas[pid]&&!AJ.formas[t.id]) gravarAjuste('formas',t.id,AJ.formas[pid]); const p=IDX[pid]; if(p) touch('receber',p); }
+  D.receber=D.receber.filter(r=>!fora.has(r.id));
+  for(const c of ['formas','conc']) if([...fora.keys()].some(id=>AJ[c][id])) removerAjustes([...fora.keys()]);
+  return fora.size;
+}
 function deduplicar(){
+  deduplicarParcelas();
   const vend={}; D.vendas.forEach(v=>{ if(v.pedido&&v.forma!=='A prazo') (vend[v.pedido]=vend[v.pedido]||[]).push(v); });
   const fora=new Set();
   D.receber.forEach(r=>{ if(!r.baixado||!r.pedido) return; const v=(vend[r.pedido]||[]).find(v=>v.valor===r.valor||v.valor===r.valorAlt); if(!v) return;
@@ -1510,7 +1535,7 @@ $('#dlg').addEventListener('close',()=>{ if(S._noRender) return; if(S.tab!=='imp
   if(est==='config'){ telaConfig(); return; } if(est==='login'){ telaLogin(); return; }
   try{ await Store.init(); }catch(e){ telaLogin('Não consegui ler os dados: '+traduzErro(e)); return; }
   for(const col of COLS){ D[col]=await Store.loadAll(col); D[col].forEach(x=>x.col=col); }
-  reindex(); await carregarAjustes(); aplicarAjustes(); syncUI();
+  reindex(); await carregarAjustes(); aplicarAjustes(); if(deduplicarParcelas()){ reindex(); aplicarAjustes(); flush(); } syncUI();
   if(D.entradas.length||D.vendas.length){ const ds=[...D.entradas.map(e=>e.date),...D.vendas.map(v=>v.date)].filter(d=>d<=HOJE).sort(); if(ds.length&&!ds.includes(HOJE)) S.dia=ds[ds.length-1]; setQuick('mes'); if(!ds.some(d=>d>=S.de)) { setQuick('tudo'); } }
   render(); ouvirTempoReal();
 })();
