@@ -387,7 +387,7 @@ function aplicarAjustes(){
     if(x.col==='receber') x.formaRec=a.f==='Não informada'?'':a.f;
     else { if(a.o&&a.o!==a.f) x.formaOrig=a.o; else delete x.formaOrig; x.forma=a.f; } }
   for(const id in AJ.conc){ const e=IDX[id]; const a=AJ.conc[id]; if(!e||!a||e.col!=='entradas') continue;
-    e.st=a.st; e.links=(a.links||[]).filter(l=>IDX[l]); e.motivo=a.motivo||''; e.manual=true; e.auto=false; if(e.st==='ok'&&!e.links.length) e.st='ni'; }
+    e.st=a.st; e.links=(a.links||[]).filter(l=>IDX[l]); e.motivo=a.motivo||''; e.manual=true; e.auto=false; if(a.resto) e.resto=a.resto; else delete e.resto; if(e.st==='ok'&&!e.links.length&&!e.resto) e.st='ni'; }
 }
 function mesclarAjustes(rem){ let mudou=false;
   for(const c of ['formas','conc']){ const R=(rem&&rem[c])||{}; for(const id in R){ if(pendAJ.has(c+':'+id)) continue; const L=AJ[c][id];
@@ -415,7 +415,20 @@ async function carregarAjustes(){
   if(db){ const a=(Store.inicial&&Store.inicial.ajustes)||{}; AJ.formas=a.formas||{}; AJ.conc=a.conc||{}; return; }
   try{ const d=JSON.parse(localStorage.getItem('conc:ajustes')||'null'); if(d){ AJ.formas=d.formas||{}; AJ.conc=d.conc||{}; } }catch(e){}
 }
-function salvarConc(e){ return gravarAjuste('conc',e.id,{st:e.st,links:e.links||[],motivo:e.motivo||'',t:new Date().toISOString()}); }
+function salvarConc(e){ if(e.resto&&e.st!=='ok'&&e.st!=='conf') delete e.resto;
+  const v={st:e.st,links:e.links||[],motivo:e.motivo||'',t:new Date().toISOString()}; if(e.resto) v.resto=e.resto; return gravarAjuste('conc',e.id,v); }
+// parte da entrada que não é venda (ex.: boleto que liquidou um título + um serviço): fica registrada com o valor
+function parteResto(e){ if(!e.resto||(e.st!=='ok'&&e.st!=='conf')) return null; const r=e.resto;
+  return Object.assign(Object.create(e),{valor:r.valor,motivo:(r.tipo==='serv'?'Parte de serviço':'Parte de acerto')+(r.desc&&!/^(Servi[çc]o|Acerto)$/.test(r.desc)?' · '+r.desc:''),_parte:true}); }
+function marcarResto(e,ids,tipo){
+  const tot=sum(ids.map(i=>IDX[i]).filter(Boolean)); const dif=e.valor-tot; const nome=tipo==='serv'?'serviço':'acerto';
+  if(dif<=0){ toast('O que foi marcado já cobre o valor da entrada; não sobra diferença.'); return false; }
+  const desc=tipo==='serv'?pedirDescServico():pedirDescAcerto(); if(desc===null) return false;
+  const vs=prompt(`Valor do ${nome} nesta entrada (R$). A diferença é ${money(dif)}:`,(dif/100).toFixed(2).replace('.',',')); if(vs===null) return false;
+  const pv=parseValor(vs); const v=pv&&pv.c; if(!v||v<=0||v>dif){ toast(`Valor inválido. Informe até ${money(dif)}.`); return false; }
+  e.links=ids.slice(); e.resto={tipo,valor:v,desc}; e.st=tot+v===e.valor?'ok':'conf'; e.auto=false; e.manual=true;
+  e.motivo=`Conferido manualmente · ${money(v)} de ${nome}`+(e.st==='conf'?` · ainda faltam ${money(dif-v)}`:'');
+  touch('entradas',e); salvarConc(e); return true; }
 const dirty={}; let saveTimer=null, flushing=null, flushAgain=false;
 function markDirty(col,key){ (dirty[col]=dirty[col]||new Set()).add(key); Sync.state='pend'; syncUI(); clearTimeout(saveTimer); saveTimer=setTimeout(flush,300); }
 async function flush(){
@@ -630,7 +643,9 @@ function calc(){
   // recebido por forma
   const porForma={}; FORMAS_R.forEach(f=>porForma[f]={total:0,itens:[]});
   vendas.filter(v=>v.forma==='Dinheiro'||v.forma==='Cartão'||v.forma==='Cheque'||v.forma==='Acerto').forEach(v=>{ porForma[v.forma].total+=v.valor; porForma[v.forma].itens.push({k:'venda',x:v}); });
-  entradas.filter(e=>e.st!=='out').forEach(e=>{ const f=e.st==='acerto'?'Acerto':porForma[e.forma]?e.forma:'Outros'; porForma[f].total+=e.valor; porForma[f].itens.push({k:'entrada',x:e}); });
+  entradas.filter(e=>e.st!=='out').forEach(e=>{ const f=e.st==='acerto'?'Acerto':porForma[e.forma]?e.forma:'Outros'; const pr=parteResto(e);
+    if(pr&&e.resto.tipo==='acerto'){ porForma[f].total+=e.valor-pr.valor; porForma[f].itens.push({k:'entrada',x:e,v:e.valor-pr.valor}); porForma['Acerto'].total+=pr.valor; porForma['Acerto'].itens.push({k:'entrada',x:pr,v:pr.valor}); }
+    else { porForma[f].total+=e.valor; porForma[f].itens.push({k:'entrada',x:e}); } });
   D.receber.filter(r=>r.baixado&&inP(r.dataBaixa)&&!LI[r.id]).forEach(r=>{ const f=r.formaRec&&porForma[r.formaRec]?r.formaRec:BSB; porForma[f].total+=r.valor; porForma[f].itens.push({k:'rec',x:r}); });
   // serviços cadastrados à mão (ex.: recebidos em dinheiro) também são dinheiro recebido
   const servMan=D.servicos.filter(x=>inP(x.date));
@@ -646,7 +661,7 @@ function calc(){
   const baixaNaoEntrou=[]; // título baixado com forma escolhida à mão conta como identificado
   const byst=st=>entradas.filter(e=>e.st===st);
   return {LI,vendas,entradas,porForma,recebido,abertos,atrasados,previstos,recebidosTit,vendasNaoEntrou,baixaNaoEntrou,
-    ok:byst('ok'),conf:byst('conf'),ni:byst('ni'),out:byst('out'),serv:byst('serv'),acerto:byst('acerto'),servMan,saidas,
+    ok:byst('ok'),conf:byst('conf'),ni:byst('ni'),out:byst('out'),serv:[...byst('serv'),...entradas.map(parteResto).filter(x=>x&&x.resto.tipo==='serv')],acerto:[...byst('acerto'),...entradas.map(parteResto).filter(x=>x&&x.resto.tipo==='acerto')],servMan,saidas,
     tVendas:sum(vendas),tEntradas:sum(entradas.filter(e=>e.st!=='out')),statusAlvo};
 }
 
@@ -669,7 +684,7 @@ function linhaVenda(v){ return {orig:'venda',cliente:v.cliente,sub:v.formaTxt||v
 function caixaDin(C){ const ent=C.porForma['Dinheiro'].total; const sai=sum(C.saidas.filter(x=>x.forma==='Dinheiro')); return {ent,sai,saldo:ent-sai}; }
 function linhaSaida(x){ return {orig:'saida',cliente:x.local,sub:x.justif,valor:x.valor,data:x.date,doc:'Saída · '+x.forma+(x.doc?' · '+x.doc:''),st:'saida',act:`data-act="saidaedit" data-id="${x.id}"`,forma:x.forma}; }
 function linhaServ(x){ return {orig:'serv',cliente:x.cliente,sub:x.desc||'Serviço',valor:x.valor,data:x.date,doc:'Serviço'+(x.doc?' '+x.doc:''),st:'servm',act:`data-act="servedit" data-id="${x.id}"`,forma:x.forma}; }
-function linhaItem(i,LI){ return i.k==='serv'?linhaServ(i.x):i.k==='venda'?linhaVenda(i.x):i.k==='rec'?Object.assign(linhaReceber(i.x,LI),{data:i.x.dataBaixa}):linhaEntrada(i.x); }
+function linhaItem(i,LI){ return i.k==='serv'?linhaServ(i.x):i.k==='venda'?linhaVenda(i.x):i.k==='rec'?Object.assign(linhaReceber(i.x,LI),{data:i.x.dataBaixa}):Object.assign(linhaEntrada(i.x),i.v!=null?{valor:i.v}:{},i.x._parte?{sub:i.x.motivo}:{}); }
 function linhaReceber(r,LI){ const l=LI[r.id]; const st=r.parcial?'parcial':l&&l.st==='ok'?'recebido':r.baixado?(!r.formaRec?'baixado':'identificado'):r.venc<HOJE?'atraso':'aberto';
   return {orig:origemReceber(r,LI),cliente:r.cliente,sub:(r.pedido?'Pedido '+r.pedido:'')+(r.juros?` · inclui juros ${money(r.juros)}`:'')+(r.parcial?` · pago ${money(r.valor)} de ${money(r.valorTit)} · falta ${money(r.saldo)}`:''),valor:r.valor,data:r.venc,doc:'Título '+(r.doc||'—'),st,act:`data-act="alvo" data-id="${r.id}"`,item:r.baixado?r:null,
     extra:l?`${l.st==='ok'?'Pago':'Possível pagamento'} em ${brs(l.e.date)} · ${l.e.pagador||''}`:r.baixado?(!r.formaRec?`Baixado em ${brs(r.dataBaixa)} · escolha a forma de recebimento`:`Baixado em ${brs(r.dataBaixa)} · recebido em ${r.formaRec.toLowerCase()}`):(r.venc<HOJE?`${dayDiff(r.venc,HOJE)} dia(s) de atraso`:(r.venc===HOJE?'vence hoje':`vence em ${dayDiff(HOJE,r.venc)} dia(s)`))}; }
@@ -942,10 +957,11 @@ function desenhaConc(){ S.dlgKind='cc';
       <span><b>${esc(k.x.cliente)}</b><span class="small">${k.tipo==='venda'?`Venda ${esc(k.x.doc||'—')} · ${br(k.x.date)} · ${esc(k.x.forma)}`:`Título ${esc(k.x.doc||'—')} · vence ${br(k.x.venc)}`}${k.valorOk?' · mesmo valor':''}${k.ns>=0.5?' · nome confere':''}</span></span>
       <span class="v">${money(k.x.valor)}</span></div>`).join(''):'<div class="empty">Nada encontrado. Pesquise pelo nome do cliente ou pelo valor.</div>'}
   </div>
-  <div class="dlg-f"><span class="sumline">Selecionado <b>${money(selTot)}</b> · diferença <b class="${dif===0?'ok':'bad'}">${money(dif)}</b></span><span class="sp"></span>
+  <div class="dlg-f"><span class="sumline">Selecionado <b>${money(selTot)}</b> · diferença <b class="${dif===0?'ok':'bad'}">${money(dif)}</b>${e.resto?`<br><span class="small">Já registrado: ${money(e.resto.valor)} de ${e.resto.tipo==='serv'?'serviço':'acerto'}</span>`:''}${S.cc.sel.size&&dif>0?'<br><span class="small">Sobrou diferença? Use “Diferença é serviço” ou “Diferença é acerto”.</span>':''}</span><span class="sp"></span>
     <button class="btn" data-act="close">Cancelar</button>
-    <button class="btn" data-act="ccserv" title="Pagamento de serviço prestado (mão de obra, locação…)">É serviço</button>
-    <button class="btn" data-act="ccacerto" title="Acerto de contas (entre empresas, com cliente etc.)">É acerto</button>
+    ${S.cc.sel.size&&dif>0?`<button class="btn" data-act="ccrestoserv" title="Liga o que está marcado e registra o restante como serviço">Diferença é serviço</button>
+    <button class="btn" data-act="ccrestoacerto" title="Liga o que está marcado e registra o restante como acerto">Diferença é acerto</button>`:`<button class="btn" data-act="ccserv" title="Pagamento de serviço prestado (mão de obra, locação…)">É serviço</button>
+    <button class="btn" data-act="ccacerto" title="Acerto de contas (entre empresas, com cliente etc.)">É acerto</button>`}
     <button class="btn" data-act="ccout" title="Transferência entre contas próprias, estorno, empréstimo etc.">Não é venda</button>
     ${e.st!=='ni'?'<button class="btn danger" data-act="ccni">Marcar não identificado</button>':''}
     <button class="btn primary" data-act="ccok" ${S.cc.sel.size?'':'disabled'}>Confirmar conciliação</button></div>`;
@@ -1059,7 +1075,7 @@ function vDia(C){
       <input class="search" id="dq" placeholder="Pesquisar cliente, documento ou valor" value="${esc(S.dq||'')}" style="width:100%;margin-bottom:8px">
       <div class="lista">${cands.length?cands.map(k=>`<div class="cand ${sel.has(k.x.id)?'sel':''}" data-act="ditem" data-id="${k.x.id}" tabindex="0"><input type="checkbox" ${sel.has(k.x.id)?'checked':''} tabindex="-1" aria-hidden="true"><span><b>${esc(k.x.cliente)}</b><span class="small">${esc(descAlvo(k.x))}${k.valorOk?' · mesmo valor':''}${k.ns>=0.5?' · nome confere':''}</span></span><span class="v">${money(k.x.valor)}</span></div>`).join(''):'<div class="empty">Nada encontrado. Pesquise pelo nome ou valor.</div>'}</div>
       <div class="linkbar"><span class="sumline">Selecionado <b>${money(tot)}</b> · diferença <b class="${dif===0?'ok':'bad'}">${money(dif)}</b></span><span class="sp"></span>
-        <button class="btn" data-act="dserv">É serviço</button><button class="btn" data-act="dacerto">É acerto</button><button class="btn" data-act="dout">Não é venda</button><button class="btn primary" data-act="dlink" ${sel.size?'':'disabled'}>Vincular</button></div>`;
+        ${sel.size&&dif>0?'<button class="btn" data-act="drestoserv">Diferença é serviço</button><button class="btn" data-act="drestoacerto">Diferença é acerto</button>':'<button class="btn" data-act="dserv">É serviço</button><button class="btn" data-act="dacerto">É acerto</button>'}<button class="btn" data-act="dout">Não é venda</button><button class="btn primary" data-act="dlink" ${sel.size?'':'disabled'}>Vincular</button></div>`;
   } else {
     const it=[...vendasPend.map(v=>({x:v,t:'Venda sem Pix no banco'})),...baixasPend.map(r=>({x:r,t:'Baixa sem forma informada'}))];
     direita=`<div class="colh"><div><b>O sistema diz que recebeu</b><span class="small">Vendas no Pix/transferência e títulos baixados no dia ainda sem entrada no banco. Toque para procurar o crédito.</span></div></div>
@@ -1421,7 +1437,7 @@ document.addEventListener('click',async ev=>{
     case 'dnext': S.dia=addDays(S.dia,1); S.selE=null; render(); break;
     case 'dsel': { if(!id||S.selE===id){ S.selE=null; } else { S.selE=id; const e=IDX[id]; S.selItens=new Set(e.links||[]); S.dq=''; } refresh(); break; }
     case 'ditem': { S.selItens.has(id)?S.selItens.delete(id):S.selItens.add(id); refresh(); break; }
-    case 'dlink': { const e=IDX[S.selE]; if(!e||!S.selItens.size) break; e.links=[...S.selItens]; e.st='ok'; e.auto=false; e.manual=true; e.motivo='Vinculado no lançamento do dia'; touch('entradas',e); salvarConc(e); S.selE=null; refresh(e.id); agendarConciliacao(); toast(`🟢 ${money(e.valor)} vinculado a ${clienteDaEntrada(e)}.`); break; }
+    case 'dlink': { const e=IDX[S.selE]; if(!e||!S.selItens.size) break; delete e.resto; e.links=[...S.selItens]; e.st='ok'; e.auto=false; e.manual=true; e.motivo='Vinculado no lançamento do dia'; touch('entradas',e); salvarConc(e); S.selE=null; refresh(e.id); agendarConciliacao(); toast(`🟢 ${money(e.valor)} vinculado a ${clienteDaEntrada(e)}.`); break; }
     case 'dout': { const e=IDX[S.selE]; if(!e) break; e.links=[]; e.st='out'; e.manual=true; e.motivo='Não é venda (transferência própria, estorno etc.)'; touch('entradas',e); salvarConc(e); S.selE=null; refresh(e.id); agendarConciliacao(); break; }
     case 'desfaz': { const e=IDX[id]; if(!e) break; e.links=[]; e.st='ni'; e.auto=false; e.manual=true; e.motivo='Vínculo desfeito'; touch('entradas',e); salvarConc(e); refresh(e.id); toast('Vínculo desfeito. A entrada voltou para 🔴 Não identificado.'); break; }
     case 'det': abrirDet(t.dataset.k,t.dataset.f); break;
@@ -1433,7 +1449,9 @@ document.addEventListener('click',async ev=>{
     case 'alvo': abrirAlvo(id); break;
     case 'alvopick': { const e=IDX[t.dataset.e]; abrirConc(e.id,[...(e.st==='ok'?e.links:[]),id]); break; }
     case 'ccsel': { const sc=($('#dlg .dlg-b')||{}).scrollTop||0; S.cc.sel.has(id)?S.cc.sel.delete(id):S.cc.sel.add(id); desenhaConc(); const b=$('#dlg .dlg-b'); if(b) b.scrollTop=sc; break; }
-    case 'ccok': { const e=IDX[S.cc.id]; e.links=[...S.cc.sel]; e.st='ok'; e.auto=false; e.manual=true; e.motivo='Conferido manualmente'; touch('entradas',e); salvarConc(e); S._noRender=true; $('#dlg').close(); S._noRender=false; refresh(e.id); agendarConciliacao(); toast(`🟢 Conciliado: ${money(e.valor)} de ${clienteDaEntrada(e)}.`); break; }
+    case 'ccok': { const e=IDX[S.cc.id]; delete e.resto; e.links=[...S.cc.sel]; e.st='ok'; e.auto=false; e.manual=true; e.motivo='Conferido manualmente'; touch('entradas',e); salvarConc(e); S._noRender=true; $('#dlg').close(); S._noRender=false; refresh(e.id); agendarConciliacao(); toast(`🟢 Conciliado: ${money(e.valor)} de ${clienteDaEntrada(e)}.`); break; }
+    case 'ccrestoserv': case 'ccrestoacerto': { const e=IDX[S.cc.id]; const tp=a==='ccrestoserv'?'serv':'acerto'; if(!marcarResto(e,[...S.cc.sel],tp)) break; S._noRender=true; $('#dlg').close(); S._noRender=false; refresh(e.id); agendarConciliacao(); toast(`${e.st==='ok'?'🟢':'🟡'} ${money(e.valor)}: ${money(e.valor-e.resto.valor)} em títulos/vendas + ${money(e.resto.valor)} de ${tp==='serv'?'serviço':'acerto'}.`,5000); break; }
+    case 'drestoserv': case 'drestoacerto': { const e=IDX[S.selE]; if(!e) break; const tp=a==='drestoserv'?'serv':'acerto'; if(!marcarResto(e,[...S.selItens],tp)) break; S.selE=null; refresh(e.id); agendarConciliacao(); toast(`${e.st==='ok'?'🟢':'🟡'} ${money(e.resto.valor)} de ${tp==='serv'?'serviço':'acerto'} registrado.`); break; }
     case 'ccserv': { const e=IDX[S.cc.id]; const d=pedirDescServico(); if(d===null) break; marcarServico(e,d); S._noRender=true; $('#dlg').close(); S._noRender=false; refresh(e.id); toast(`🔵 ${money(e.valor)} marcado como serviço.`); break; }
     case 'dserv': { const e=IDX[S.selE]; if(!e) break; const d=pedirDescServico(); if(d===null) break; marcarServico(e,d); S.selE=null; refresh(e.id); toast(`🔵 ${money(e.valor)} marcado como serviço.`); break; }
     case 'ccacerto': { const e=IDX[S.cc.id]; const d=pedirDescAcerto(); if(d===null) break; marcarAcerto(e,d); S._noRender=true; $('#dlg').close(); S._noRender=false; refresh(e.id); toast(`🟣 ${money(e.valor)} marcado como acerto.`); break; }
