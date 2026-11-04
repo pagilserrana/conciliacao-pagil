@@ -398,7 +398,7 @@ function syncUI(){ const el=document.getElementById('sync'); if(!el) return;
 window.addEventListener('online',syncUI); window.addEventListener('offline',syncUI);
 
 /* ============ ajustes manuais (ajustes/manual) ============ */
-const AJ={formas:{},conc:{}}; const pendAJ=new Set();
+const AJ={formas:{},conc:{},trocas:{}}; const pendAJ=new Set();
 function aplicarAjustes(){
   for(const id in AJ.formas){ const x=IDX[id]; const a=AJ.formas[id]; if(!x||!a) continue;
     if(x.col==='receber') x.formaRec=a.f==='Não informada'?'':a.f;
@@ -407,7 +407,7 @@ function aplicarAjustes(){
     e.st=a.st; e.links=(a.links||[]).filter(l=>IDX[l]); e.motivo=a.motivo||''; e.manual=true; e.auto=false; if(a.resto) e.resto=a.resto; else delete e.resto; if(e.st==='ok'&&!e.links.length&&!e.resto) e.st='ni'; }
 }
 function mesclarAjustes(rem){ let mudou=false;
-  for(const c of ['formas','conc']){ const R=(rem&&rem[c])||{}; for(const id in R){ if(pendAJ.has(c+':'+id)) continue; const L=AJ[c][id];
+  for(const c of ['formas','conc','trocas']){ const R=(rem&&rem[c])||{}; for(const id in R){ if(pendAJ.has(c+':'+id)) continue; const L=AJ[c][id];
     if(!L||String(R[id].t||'')>String(L.t||'')){ if(JSON.stringify(L)!==JSON.stringify(R[id])){ AJ[c][id]=R[id]; mudou=true; } } }
     // ajustes apagados em outro aparelho (ex.: "Apagar lançamentos do dia")
     if(rem&&rem[c]) for(const id in AJ[c]){ if(!(id in R)&&!pendAJ.has(c+':'+id)){ delete AJ[c][id]; mudou=true; } } }
@@ -429,8 +429,8 @@ async function gravarAjuste(campo,id,valor){
 }
 async function enviarAjustes(){ for(const k of [...pendAJ]){ const [c,id]=k.split(':'); await gravarAjuste(c,id,AJ[c][id]); } }
 async function carregarAjustes(){
-  if(db){ const a=(Store.inicial&&Store.inicial.ajustes)||{}; AJ.formas=a.formas||{}; AJ.conc=a.conc||{}; return; }
-  try{ const d=JSON.parse(localStorage.getItem('conc:ajustes')||'null'); if(d){ AJ.formas=d.formas||{}; AJ.conc=d.conc||{}; } }catch(e){}
+  if(db){ const a=(Store.inicial&&Store.inicial.ajustes)||{}; AJ.formas=a.formas||{}; AJ.conc=a.conc||{}; AJ.trocas=a.trocas||{}; return; }
+  try{ const d=JSON.parse(localStorage.getItem('conc:ajustes')||'null'); if(d){ AJ.formas=d.formas||{}; AJ.conc=d.conc||{}; AJ.trocas=d.trocas||{}; } }catch(e){}
 }
 function salvarConc(e){ if(e.resto&&e.st!=='ok'&&e.st!=='conf') delete e.resto;
   const v={st:e.st,links:e.links||[],motivo:e.motivo||'',t:new Date().toISOString()}; if(e.resto) v.resto=e.resto; return gravarAjuste('conc',e.id,v); }
@@ -470,7 +470,7 @@ function touch(col,x){ markDirty(col,gkey(col,x)); }
 async function recarregarDaPlanilha(silencioso){
   if(!db){ if(!silencioso) toast('Modo de teste: os dados estão neste navegador.'); return; }
   await flush();
-  try{ await Store.init(); for(const col of COLS){ D[col]=await Store.loadAll(col); D[col].forEach(x=>x.col=col); } reindex(); await carregarAjustes(); aplicarAjustes(); if(unicoPorId()+deduplicarPedidos()+(reindex(),deduplicarTitulos())+(reindex(),deduplicarParcelas())){ reindex(); aplicarAjustes(); flush(); }
+  try{ await Store.init(); for(const col of COLS){ D[col]=await Store.loadAll(col); D[col].forEach(x=>x.col=col); } reindex(); await carregarAjustes(); aplicarAjustes(); if(unicoPorId()+deduplicarPedidos(true)+(reindex(),deduplicarTitulos(true))+(reindex(),deduplicarParcelas())){ reindex(); aplicarAjustes(); flush(); }
     Sync.state='ok'; syncUI(); refresh(); if(!silencioso) toast('Dados atualizados.'); }
   catch(e){ toast('Não consegui ler o Firebase: '+traduzErro(e),7000); }
 }
@@ -765,11 +765,24 @@ function vPainel(C){
   return `<h1 class="page">${periodo}</h1>
     <p class="lede">${[C.ni.length?`<b style="color:var(--red)">${C.ni.length} entrada(s) no banco sem dono</b>`:'',C.conf.length?`<b style="color:var(--amber)">${C.conf.length} para conferir</b>`:''].filter(Boolean).join(' e ')||'Todas as entradas do período estão identificadas'}. Toque em qualquer valor para ver os lançamentos.</p>
     ${cards}
+    ${secaoTrocas(true)}
     ${graficoCondicoes(C,'Vendas por condição de pagamento')}
     <section class="block"><h2>Recebido por forma</h2><p class="sub">Pix, transferência, boleto e depósito vêm do extrato; dinheiro e cartão vêm das vendas; títulos baixados sem entrada no banco vêm do Contas a Receber.</p>
       <div class="legend"><span><i style="background:var(--green)"></i>Conciliado</span><span><i style="background:var(--amber)"></i>Conferir</span><span><i style="background:var(--red)"></i>Não identificado</span><span><i style="background:var(--blue)"></i>Pelas vendas (caixa/maquininha)</span></div>
       <div class="bars">${barras||'<div class="panel empty">Nada recebido no período.</div>'}</div></section>
     ${C.conf.length||C.ni.length?`<section class="block"><h2>Para resolver agora</h2><p class="sub">Toque na linha para escolher a venda ou o título correspondente.</p>${tabela([...C.ni,...C.conf].sort((a,b)=>a.date.localeCompare(b.date)).map(linhaEntrada))}</section>`:''}`;
+}
+function secaoTrocas(filtrar){
+  let ts=Object.entries(AJ.trocas||{}).map(([id,x])=>Object.assign({id},x));
+  if(filtrar) ts=ts.filter(x=>inP(x.depois&&x.depois.data)||inP(x.antes&&x.antes.data)||inP(String(x.t||'').slice(0,10)));
+  if(!ts.length) return filtrar?'':`<section class="block"><h2>🔁 Repetidos com valor diferente</h2><div class="panel empty">Nenhum pedido ou título repetido com valor diferente até agora.</div></section>`;
+  ts.sort((a,b)=>String(b.t).localeCompare(String(a.t)));
+  return `<section class="block"><h2>🔁 Repetidos com valor diferente (${ts.length})</h2><p class="sub">Pedido ou título que apareceu de novo nos PDFs com outro valor (ex.: editado ou com nota emitida depois). O app considera sempre o último valor; o anterior saiu dos totais.</p>
+    <div class="scroll"><table><thead><tr><th>Tipo</th><th>Nº</th><th>Cliente</th><th class="num">Valor anterior</th><th class="num">Valor considerado</th><th class="num">Diferença</th><th>Detectado em</th></tr></thead><tbody>
+    ${ts.slice(0,200).map(x=>{ const dif=x.depois.valor-x.antes.valor; return `<tr><td>${esc(x.tipo)}</td><td><b>${esc(x.chave)}</b></td><td>${esc(x.cliente||'')}</td>
+      <td class="num">${money(x.antes.valor)}<span class="small">${x.antes.data?br(x.antes.data):''}${x.antes.ref?' · '+esc(x.antes.ref):''}</span></td>
+      <td class="num"><b>${money(x.depois.valor)}</b><span class="small">${x.depois.data?br(x.depois.data):''}${x.depois.ref?' · '+esc(x.depois.ref):''}</span></td>
+      <td class="num" style="color:${dif<0?'var(--red)':'var(--green)'}">${dif>0?'+':''}${money(dif)}</td><td>${x.t?br(String(x.t).slice(0,10)):''}</td></tr>`; }).join('')}</tbody></table></div></section>`;
 }
 function tabela(rows,opt={}){
   let filtro='';
@@ -1293,6 +1306,18 @@ function chequeDoContasReceber(){
 /* ---- pedido ou título que o sistema mudou de data (ex.: ao emitir/editar a nota fiscal) ----
    o mesmo pedido (Nº do pedido) ou o mesmo título (Doc. Nº + parcela) só pode existir uma vez:
    fica a ocorrência mais recente e a da data antiga some; vínculos e correções passam para a que ficou */
+// registro dos repetidos com valor diferente (vale sempre o último valor)
+function registrarTroca(tipo,chave,cliente,antes,depois){
+  if(antes.valor===depois.valor) return false;
+  const id='t'+hashStr([tipo,chave,antes.valor,depois.valor,antes.data,depois.data].join('|'));
+  if(AJ.trocas[id]) return false;
+  gravarAjuste('trocas',id,{tipo,chave,cliente:cliente||'',antes,depois,t:new Date().toISOString()}); return true; }
+function fotoPedidos(){ const m={}; D.vendas.forEach(v=>{ if(!v.pedido||/^vm/.test(v.id)) return; const x=m[v.pedido]||(m[v.pedido]={valor:0,data:v.date,cliente:v.cliente,formas:new Set()}); x.valor+=v.valor; if(v.date>x.data) x.data=v.date; x.formas.add(v.forma); }); return m; }
+function fotoTitulos(){ const m={}; D.receber.forEach(r=>{ if(r.origem==='venda'||r.parcial||!(r.pedido||r.titulo)) return; m[chaveTitulo(r)]={valor:r.valorTit||r.valor,data:r.dataBaixa||r.venc,titulo:r.titulo,pedido:r.pedido,cliente:r.cliente}; }); return m; }
+function compararFotos(antesP,antesT,pedNovos,titNovos){ let n=0; const dP=fotoPedidos(), dT=fotoTitulos();
+  pedNovos.forEach(p=>{ const a=antesP[p], d=dP[p]; if(a&&d&&a.valor!==d.valor&&registrarTroca('Pedido',p,d.cliente,{valor:a.valor,data:a.data,ref:[...a.formas].join(' + ')},{valor:d.valor,data:d.data,ref:[...d.formas].join(' + ')})) n++; });
+  titNovos.forEach(k=>{ const a=antesT[k], d=dT[k]; if(a&&d&&a.valor!==d.valor&&registrarTroca('Título',(d.titulo||k)+(d.pedido?` · Doc. ${d.pedido}`:''),d.cliente,{valor:a.valor,data:a.data,ref:a.titulo||''},{valor:d.valor,data:d.data,ref:d.titulo||''})) n++; });
+  return n; }
 function substituirItens(mapa){ // mapa: id removido -> item que fica (ou null)
   if(!mapa.size) return 0;
   D.entradas.forEach(e=>{ if(!(e.links||[]).some(l=>mapa.has(l))) return;
@@ -1312,7 +1337,7 @@ function unicoPorId(){ let n=0;
       const perde=melhor>0?o:x; if(melhor>0) vis.set(x.id,x); fora.add(perde); markDirty(col,gkey(col,perde)); });
     if(fora.size){ D[col]=D[col].filter(x=>!fora.has(x)); n+=fora.size; D[col].forEach(x=>{ if(vis.get(x.id)===x) touch(col,x); }); } }
   if(n) reindex(); return n; }
-function deduplicarPedidos(){
+function deduplicarPedidos(log){
   const g={}; D.vendas.forEach(v=>{ if(!v.pedido||/^vm/.test(v.id)) return; (g[v.pedido]=g[v.pedido]||[]).push(v); });
   const mapa=new Map(); let movidos=0;
   for(const ped in g){ const vs=g[ped]; if(vs.length<2) continue;
@@ -1320,18 +1345,25 @@ function deduplicarPedidos(){
     const lMax=Math.max(...naData.map(v=>v.lote||0)); const ficam=naData.filter(v=>(v.lote||0)===lMax);
     const saem=vs.filter(v=>!ficam.includes(v)); if(!saem.length) continue;
     if(saem.some(v=>v.date!==dMax)){ movidos++; if(S._pedMov) S._pedMov.add(ped); }
+    if(log){ const porData={}; saem.forEach(v=>{ (porData[v.date]=porData[v.date]||[]).push(v); }); const tf=sum(ficam);
+      for(const d in porData){ const tv=sum(porData[d]); if(tv!==tf) registrarTroca('Pedido',ped,ficam[0].cliente,{valor:tv,data:d,ref:[...new Set(porData[d].map(v=>v.forma))].join(' + ')},{valor:tf,data:dMax,ref:[...new Set(ficam.map(v=>v.forma))].join(' + ')}); } }
     const livres=ficam.slice();
     saem.forEach(v=>{ let k=livres.find(f=>f.valor===v.valor&&f.forma===v.forma)||livres.find(f=>f.valor===v.valor)||null; if(k) livres.splice(livres.indexOf(k),1); else k=ficam[0]; mapa.set(v.id,k); });
   }
   substituirItens(mapa); return movidos;
 }
 const chaveTitulo=r=>{ const suf=(String(r.titulo||'').match(/-([^-]+)$/)||[])[1]||String(r.titulo||''); return (r.pedido||r.titulo||'')+'|'+suf; };
-function deduplicarTitulos(){
+function deduplicarTitulos(log){
   const g={}; D.receber.forEach(r=>{ if(r.origem==='venda'||r.parcial||!(r.pedido||r.titulo)) return; const k=chaveTitulo(r); (g[k]=g[k]||[]).push(r); });
   const mapa=new Map(); let n=0;
   for(const k in g){ const rs=g[k]; if(rs.length<2) continue;
     rs.sort((a,b)=>((b.lote||0)-(a.lote||0))||((b.baixado?1:0)-(a.baixado?1:0))||String(b.dataBaixa||'').localeCompare(String(a.dataBaixa||''))||String(b.emissao||'').localeCompare(String(a.emissao||''))||String(b.venc||'').localeCompare(String(a.venc||'')));
-    rs.slice(1).forEach(r=>mapa.set(r.id,rs[0])); n+=rs.length-1; }
+    rs.slice(1).forEach(r=>{ mapa.set(r.id,rs[0]); if(log) registrarTroca('Título',(rs[0].titulo||k)+(rs[0].pedido?` · Doc. ${rs[0].pedido}`:''),rs[0].cliente,{valor:r.valorTit||r.valor,data:r.dataBaixa||r.venc,ref:r.titulo||''},{valor:rs[0].valorTit||rs[0].valor,data:rs[0].dataBaixa||rs[0].venc,ref:rs[0].titulo||''}); }); n+=rs.length-1; }
+  // mesmo número de título com Doc. Nº diferente: também é o mesmo título
+  const g2={}; D.receber.forEach(r=>{ if(mapa.has(r.id)||r.origem==='venda'||r.parcial||!r.titulo) return; (g2[r.titulo]=g2[r.titulo]||[]).push(r); });
+  for(const k in g2){ const rs=g2[k]; if(rs.length<2) continue;
+    rs.sort((a,b)=>((b.lote||0)-(a.lote||0))||((b.baixado?1:0)-(a.baixado?1:0))||String(b.dataBaixa||'').localeCompare(String(a.dataBaixa||''))||String(b.emissao||'').localeCompare(String(a.emissao||'')));
+    rs.slice(1).forEach(r=>{ mapa.set(r.id,rs[0]); if(log) registrarTroca('Título',k,rs[0].cliente,{valor:r.valorTit||r.valor,data:r.dataBaixa||r.venc,ref:'Doc. '+(r.pedido||'—')},{valor:rs[0].valorTit||rs[0].valor,data:rs[0].dataBaixa||rs[0].venc,ref:'Doc. '+(rs[0].pedido||'—')}); }); n+=rs.length-1; }
   substituirItens(mapa); return n;
 }
 function deduplicarParcelas(){
@@ -1371,8 +1403,8 @@ function deduplicar(){
 async function importarPdfs(files){
   reindex(); const res=[]; const erros=[]; let nE=0,nV=0,nR=0,saidas=0; const datas=[]; const datasExt=new Set();
   $('#app').insertAdjacentHTML('afterbegin','<div class="panel" style="margin-top:20px" id="lendo">Lendo os PDFs…</div>');
-  const LOTE=Date.now(); S._jaMovido=0; S._pedMov=new Set();
-  const add=(col,x)=>{ if(col==='vendas'||col==='receber') x.lote=LOTE;
+  const LOTE=Date.now(); S._jaMovido=0; S._pedMov=new Set(); const fotoP=fotoPedidos(), fotoT=fotoTitulos(); const pedNovos=new Set(), titNovos=new Set();
+  const add=(col,x)=>{ if(col==='vendas'||col==='receber') x.lote=LOTE; if(col==='vendas'&&x.pedido) pedNovos.add(x.pedido); if(col==='receber'&&x.origem==='contas'&&!x.parcial&&(x.pedido||x.titulo)) titNovos.add(chaveTitulo(x));
     const ex=IDX[x.id]; if(ex&&ex.col===col&&col==='vendas'&&ex.date>x.date){ S._jaMovido=(S._jaMovido||0)+1; return 0; } // pedido já está numa data mais nova
     if(ex&&ex.col===col){ const k0=gkey(col,ex); const keep={st:ex.st,links:ex.links,auto:ex.auto,manual:ex.manual,motivo:ex.motivo,resto:ex.resto}; if(!keep.resto) delete keep.resto;
       Object.assign(ex,x,col==='entradas'?keep:{}); if(k0!==gkey(col,ex)){ markDirty(col,k0); if(col==='vendas'&&ex.pedido) S._pedMov.add(ex.pedido); } touch(col,ex); return 0; }
@@ -1391,12 +1423,12 @@ async function importarPdfs(files){
   }
   const lend=$('#lendo'); if(lend) lend.remove();
   if(!res.length){ toast(`Não reconheci ${erros.join(', ')}. Envie o extrato Sicoob ou Bradesco, o Listar Pedido por Data ou o Contas a Receber em PDF.`,7000); return; }
-  chequeDoContasReceber(); deduplicar(); reindex(); aplicarAjustes(); const c=conciliarAuto(); await flush();
+  chequeDoContasReceber(); deduplicar(); reindex(); const nTroca=compararFotos(fotoP,fotoT,pedNovos,titNovos); aplicarAjustes(); const c=conciliarAuto(); await flush();
   const dExt=datas.filter((d,i)=>datasExt.has(i)); const base=(dExt.length?dExt:datas).slice().sort();
   if(base.length){ S.de=dExt.length?base[0]:base[base.length-1]; S.ate=base[base.length-1]; S.quick=''; }
   if(S.tab!=='dia'&&S.tab!=='painel') S.tab='dia'; if(base.length) S.dia=base[base.length-1]; render();
   const mvT=(S._jaMovido?` · ${S._jaMovido} lançamento(s) de pedido(s) já estavam numa data mais nova e ficaram lá`:'')+(S._movidos&&(S._movidos.ped||S._movidos.tit)?` · ${S._movidos.ped?`${S._movidos.ped} pedido(s) mudaram de data e foram movidos`:''}${S._movidos.ped&&S._movidos.tit?' e ':''}${S._movidos.tit?`${S._movidos.tit} título(s) repetido(s) substituído(s)`:''}`:'');
-  toast(res.join(' · ')+mvT+`. Conciliação: 🟢 ${c.ok||0} · 🟡 ${c.conf||0} · 🔴 ${c.ni||0}.`+(erros.length?` Não reconheci: ${erros.join(', ')}.`:''),9000);
+  toast(res.join(' · ')+mvT+(nTroca?` · ⚠ ${nTroca} repetido(s) com valor diferente (vale o último; veja no Painel)`:'')+`. Conciliação: 🟢 ${c.ok||0} · 🟡 ${c.conf||0} · 🔴 ${c.ni||0}.`+(erros.length?` Não reconheci: ${erros.join(', ')}.`:''),9000);
 }
 function vImportar(){
   const q=t=>`${D[t].length} lançamento(s) salvos`;
@@ -1407,6 +1439,7 @@ function vImportar(){
     <div class="panel"><h3>Vendas</h3><p>CGI → Listar Pedido por Data (ou o PDF de um pedido). Pix e transferência são cruzados com o banco; parcelas a prazo futuras entram como recebimentos previstos.</p><p class="statusline">${q('vendas')}</p></div>
     <div class="panel"><h3>Recebimentos</h3><p>CGI → Contas a Receber. Em aberto viram previstos ou atrasados; títulos já baixados são ligados ao Pix que os pagou.</p><p class="statusline">${q('receber')}</p></div>
   </div>
+  ${secaoTrocas(false)}
   <section class="block"><h2>Dados</h2><p class="sub">${db?`Tudo fica gravado no Firebase (projeto <b>${esc(FBCFG.projectId)}</b>) e aparece na hora em todos os aparelhos. Conectado como <b>${esc(usuario&&usuario.email||'')}</b>.`:'Modo de teste: os dados ficam só neste navegador.'}</p>
     <div class="toolbar"><button class="btn" data-act="recarregar">Recarregar dados</button>${db?'<button class="btn" data-act="fbsair">Sair da conta</button>':'<button class="btn" data-act="fbsair">Conectar ao Firebase</button>'}<button class="btn" data-act="auto">Refazer conciliação automática</button><button class="btn" data-act="bkexp">Exportar backup</button><button class="btn" data-act="bkimp">Importar backup</button><button class="btn danger" data-act="zerar">Apagar todos os dados</button></div></section>`;
 }
@@ -1647,7 +1680,7 @@ document.addEventListener('click',async ev=>{
       try{ const d=gerarPdf(); await baixar(S.de===S.ate?`conciliacao-${S.de}.pdf`:`conciliacao-${S.de}-a-${S.ate}.pdf`,d.output('blob'),'application/pdf'); }catch(e){ console.error(e); toast('Não consegui gerar o PDF.'); } break; }
     case 'zerar': { if(!confirm('Apagar todas as entradas, vendas, recebimentos e conciliações? Não dá para desfazer.')) break;
       for(const col of COLS){ D[col]=[]; } for(const c in dirty) dirty[c].clear(); if(!db){ for(let i=localStorage.length-1;i>=0;i--){ const k=localStorage.key(i); if(k&&k.startsWith('conc:')) localStorage.removeItem(k); } }
-      AJ.formas={}; AJ.conc={}; if(db){ try{ for(const col of COLS){ const sn=await db.collection(col).get(); const refs=sn.docs.map(d=>d.ref); for(let i=0;i<refs.length;i+=400){ const b=db.batch(); refs.slice(i,i+400).forEach(r=>b.delete(r)); await b.commit(); } } await db.doc('ajustes/manual').delete(); }catch(e){ toast('Não consegui limpar o Firebase: '+traduzErro(e)); break; } } else { try{ localStorage.removeItem('conc:ajustes'); }catch(e){} } render(); toast('Todos os dados foram apagados.'); break; }
+      AJ.formas={}; AJ.conc={}; AJ.trocas={}; if(db){ try{ for(const col of COLS){ const sn=await db.collection(col).get(); const refs=sn.docs.map(d=>d.ref); for(let i=0;i<refs.length;i+=400){ const b=db.batch(); refs.slice(i,i+400).forEach(r=>b.delete(r)); await b.commit(); } } await db.doc('ajustes/manual').delete(); }catch(e){ toast('Não consegui limpar o Firebase: '+traduzErro(e)); break; } } else { try{ localStorage.removeItem('conc:ajustes'); }catch(e){} } render(); toast('Todos os dados foram apagados.'); break; }
     case 'recarregar': recarregarDaPlanilha(false); break;
     case 'apagardia': dlgApagarDia(); break;
     case 'xlsvendas': dlgExcelVendas(); break;
@@ -1718,7 +1751,7 @@ $('#dlg').addEventListener('close',()=>{ if(S._noRender) return; if(S.tab!=='imp
   if(est==='config'){ telaConfig(); return; } if(est==='login'){ telaLogin(); return; }
   try{ await Store.init(); }catch(e){ telaLogin('Não consegui ler os dados: '+traduzErro(e)); return; }
   for(const col of COLS){ D[col]=await Store.loadAll(col); D[col].forEach(x=>x.col=col); }
-  reindex(); await carregarAjustes(); aplicarAjustes(); if(unicoPorId()+deduplicarPedidos()+(reindex(),deduplicarTitulos())+(reindex(),deduplicarParcelas())){ reindex(); aplicarAjustes(); flush(); } syncUI();
+  reindex(); await carregarAjustes(); aplicarAjustes(); if(unicoPorId()+deduplicarPedidos(true)+(reindex(),deduplicarTitulos(true))+(reindex(),deduplicarParcelas())){ reindex(); aplicarAjustes(); flush(); } syncUI();
   if(D.entradas.length||D.vendas.length){ const ds=[...D.entradas.map(e=>e.date),...D.vendas.map(v=>v.date)].filter(d=>d<=HOJE).sort(); if(ds.length&&!ds.includes(HOJE)) S.dia=ds[ds.length-1]; setQuick('mes'); if(!ds.some(d=>d>=S.de)) { setQuick('tudo'); } }
   render(); ouvirTempoReal();
 })();
