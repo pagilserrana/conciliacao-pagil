@@ -470,7 +470,7 @@ function touch(col,x){ markDirty(col,gkey(col,x)); }
 async function recarregarDaPlanilha(silencioso){
   if(!db){ if(!silencioso) toast('Modo de teste: os dados estão neste navegador.'); return; }
   await flush();
-  try{ await Store.init(); for(const col of COLS){ D[col]=await Store.loadAll(col); D[col].forEach(x=>x.col=col); } reindex(); await carregarAjustes(); aplicarAjustes(); if(deduplicarParcelas()){ reindex(); aplicarAjustes(); flush(); }
+  try{ await Store.init(); for(const col of COLS){ D[col]=await Store.loadAll(col); D[col].forEach(x=>x.col=col); } reindex(); await carregarAjustes(); aplicarAjustes(); if(unicoPorId()+deduplicarPedidos()+(reindex(),deduplicarTitulos())+(reindex(),deduplicarParcelas())){ reindex(); aplicarAjustes(); flush(); }
     Sync.state='ok'; syncUI(); refresh(); if(!silencioso) toast('Dados atualizados.'); }
   catch(e){ toast('Não consegui ler o Firebase: '+traduzErro(e),7000); }
 }
@@ -1290,6 +1290,50 @@ function chequeDoContasReceber(){
 }
 // parcela a prazo criada pelo Listar Pedido × o mesmo título vindo do Contas a Receber (mesmo pedido e valor):
 // fica só o título do Contas a Receber, e vínculos/correções da parcela passam para ele
+/* ---- pedido ou título que o sistema mudou de data (ex.: ao emitir/editar a nota fiscal) ----
+   o mesmo pedido (Nº do pedido) ou o mesmo título (Doc. Nº + parcela) só pode existir uma vez:
+   fica a ocorrência mais recente e a da data antiga some; vínculos e correções passam para a que ficou */
+function substituirItens(mapa){ // mapa: id removido -> item que fica (ou null)
+  if(!mapa.size) return 0;
+  D.entradas.forEach(e=>{ if(!(e.links||[]).some(l=>mapa.has(l))) return;
+    e.links=[...new Set(e.links.map(l=>mapa.has(l)?(mapa.get(l)?mapa.get(l).id:null):l).filter(Boolean))];
+    if(!e.links.length&&!e.resto&&(e.st==='ok'||e.st==='conf')){ e.st='ni'; e.motivo=''; e.manual=false; e.auto=false; }
+    touch('entradas',e); if(AJ.conc[e.id]) salvarConc(e); });
+  const rem=[];
+  for(const [id,k] of mapa){ const x=IDX[id]; if(x) touch(x.col,x); if(k&&AJ.formas[id]&&!AJ.formas[k.id]) gravarAjuste('formas',k.id,AJ.formas[id]); if(AJ.formas[id]||AJ.conc[id]) rem.push(id); }
+  for(const col of ['vendas','receber']) D[col]=D[col].filter(x=>!mapa.has(x.id));
+  if(rem.length) removerAjustes(rem);
+  return mapa.size;
+}
+function unicoPorId(){ let n=0;
+  for(const col of COLS){ const vis=new Map(); const fora=new Set();
+    D[col].forEach(x=>{ const o=vis.get(x.id); if(!o){ vis.set(x.id,x); return; }
+      const melhor=((x.lote||0)-(o.lote||0))||String(gkey(col,x)).localeCompare(String(gkey(col,o)));
+      const perde=melhor>0?o:x; if(melhor>0) vis.set(x.id,x); fora.add(perde); markDirty(col,gkey(col,perde)); });
+    if(fora.size){ D[col]=D[col].filter(x=>!fora.has(x)); n+=fora.size; D[col].forEach(x=>{ if(vis.get(x.id)===x) touch(col,x); }); } }
+  if(n) reindex(); return n; }
+function deduplicarPedidos(){
+  const g={}; D.vendas.forEach(v=>{ if(!v.pedido||/^vm/.test(v.id)) return; (g[v.pedido]=g[v.pedido]||[]).push(v); });
+  const mapa=new Map(); let movidos=0;
+  for(const ped in g){ const vs=g[ped]; if(vs.length<2) continue;
+    const dMax=vs.reduce((a,v)=>v.date>a?v.date:a,''); const naData=vs.filter(v=>v.date===dMax);
+    const lMax=Math.max(...naData.map(v=>v.lote||0)); const ficam=naData.filter(v=>(v.lote||0)===lMax);
+    const saem=vs.filter(v=>!ficam.includes(v)); if(!saem.length) continue;
+    if(saem.some(v=>v.date!==dMax)){ movidos++; if(S._pedMov) S._pedMov.add(ped); }
+    const livres=ficam.slice();
+    saem.forEach(v=>{ let k=livres.find(f=>f.valor===v.valor&&f.forma===v.forma)||livres.find(f=>f.valor===v.valor)||null; if(k) livres.splice(livres.indexOf(k),1); else k=ficam[0]; mapa.set(v.id,k); });
+  }
+  substituirItens(mapa); return movidos;
+}
+const chaveTitulo=r=>{ const suf=(String(r.titulo||'').match(/-([^-]+)$/)||[])[1]||String(r.titulo||''); return (r.pedido||r.titulo||'')+'|'+suf; };
+function deduplicarTitulos(){
+  const g={}; D.receber.forEach(r=>{ if(r.origem==='venda'||r.parcial||!(r.pedido||r.titulo)) return; const k=chaveTitulo(r); (g[k]=g[k]||[]).push(r); });
+  const mapa=new Map(); let n=0;
+  for(const k in g){ const rs=g[k]; if(rs.length<2) continue;
+    rs.sort((a,b)=>((b.lote||0)-(a.lote||0))||((b.baixado?1:0)-(a.baixado?1:0))||String(b.dataBaixa||'').localeCompare(String(a.dataBaixa||''))||String(b.emissao||'').localeCompare(String(a.emissao||''))||String(b.venc||'').localeCompare(String(a.venc||'')));
+    rs.slice(1).forEach(r=>mapa.set(r.id,rs[0])); n+=rs.length-1; }
+  substituirItens(mapa); return n;
+}
 function deduplicarParcelas(){
   const cr={}; D.receber.forEach(r=>{ if(r.origem!=='venda'&&r.pedido) (cr[r.pedido]=cr[r.pedido]||[]).push(r); });
   const parc={}; D.receber.forEach(r=>{ if(r.origem==='venda'&&r.pedido&&cr[r.pedido]) (parc[r.pedido]=parc[r.pedido]||[]).push(r); });
@@ -1313,6 +1357,8 @@ function deduplicarParcelas(){
   return fora.size;
 }
 function deduplicar(){
+  unicoPorId(); const mv=deduplicarPedidos(); reindex(); const nt=deduplicarTitulos(); reindex();
+  S._movidos={ped:S._pedMov?S._pedMov.size:mv,tit:nt};
   deduplicarParcelas();
   const vend={}; D.vendas.forEach(v=>{ if(v.pedido&&v.forma!=='A prazo') (vend[v.pedido]=vend[v.pedido]||[]).push(v); });
   const fora=new Set();
@@ -1325,7 +1371,11 @@ function deduplicar(){
 async function importarPdfs(files){
   reindex(); const res=[]; const erros=[]; let nE=0,nV=0,nR=0,saidas=0; const datas=[]; const datasExt=new Set();
   $('#app').insertAdjacentHTML('afterbegin','<div class="panel" style="margin-top:20px" id="lendo">Lendo os PDFs…</div>');
-  const add=(col,x)=>{ const ex=IDX[x.id]; if(ex&&ex.col===col){ const keep={st:ex.st,links:ex.links,auto:ex.auto,manual:ex.manual,motivo:ex.motivo}; Object.assign(ex,x,col==='entradas'?keep:{}); touch(col,ex); return 0; }
+  const LOTE=Date.now(); S._jaMovido=0; S._pedMov=new Set();
+  const add=(col,x)=>{ if(col==='vendas'||col==='receber') x.lote=LOTE;
+    const ex=IDX[x.id]; if(ex&&ex.col===col&&col==='vendas'&&ex.date>x.date){ S._jaMovido=(S._jaMovido||0)+1; return 0; } // pedido já está numa data mais nova
+    if(ex&&ex.col===col){ const k0=gkey(col,ex); const keep={st:ex.st,links:ex.links,auto:ex.auto,manual:ex.manual,motivo:ex.motivo,resto:ex.resto}; if(!keep.resto) delete keep.resto;
+      Object.assign(ex,x,col==='entradas'?keep:{}); if(k0!==gkey(col,ex)){ markDirty(col,k0); if(col==='vendas'&&ex.pedido) S._pedMov.add(ex.pedido); } touch(col,ex); return 0; }
     if(col==='entradas'){ x.st='ni'; x.links=[]; } D[col].push(x); IDX[x.id]=x; touch(col,x); return 1; };
   for(const f of files){
     try{ const L=await pdfLines(f); const t=tipoPdf(L);
@@ -1345,7 +1395,8 @@ async function importarPdfs(files){
   const dExt=datas.filter((d,i)=>datasExt.has(i)); const base=(dExt.length?dExt:datas).slice().sort();
   if(base.length){ S.de=dExt.length?base[0]:base[base.length-1]; S.ate=base[base.length-1]; S.quick=''; }
   if(S.tab!=='dia'&&S.tab!=='painel') S.tab='dia'; if(base.length) S.dia=base[base.length-1]; render();
-  toast(res.join(' · ')+`. Conciliação: 🟢 ${c.ok||0} · 🟡 ${c.conf||0} · 🔴 ${c.ni||0}.`+(erros.length?` Não reconheci: ${erros.join(', ')}.`:''),9000);
+  const mvT=(S._jaMovido?` · ${S._jaMovido} lançamento(s) de pedido(s) já estavam numa data mais nova e ficaram lá`:'')+(S._movidos&&(S._movidos.ped||S._movidos.tit)?` · ${S._movidos.ped?`${S._movidos.ped} pedido(s) mudaram de data e foram movidos`:''}${S._movidos.ped&&S._movidos.tit?' e ':''}${S._movidos.tit?`${S._movidos.tit} título(s) repetido(s) substituído(s)`:''}`:'');
+  toast(res.join(' · ')+mvT+`. Conciliação: 🟢 ${c.ok||0} · 🟡 ${c.conf||0} · 🔴 ${c.ni||0}.`+(erros.length?` Não reconheci: ${erros.join(', ')}.`:''),9000);
 }
 function vImportar(){
   const q=t=>`${D[t].length} lançamento(s) salvos`;
@@ -1667,7 +1718,7 @@ $('#dlg').addEventListener('close',()=>{ if(S._noRender) return; if(S.tab!=='imp
   if(est==='config'){ telaConfig(); return; } if(est==='login'){ telaLogin(); return; }
   try{ await Store.init(); }catch(e){ telaLogin('Não consegui ler os dados: '+traduzErro(e)); return; }
   for(const col of COLS){ D[col]=await Store.loadAll(col); D[col].forEach(x=>x.col=col); }
-  reindex(); await carregarAjustes(); aplicarAjustes(); if(deduplicarParcelas()){ reindex(); aplicarAjustes(); flush(); } syncUI();
+  reindex(); await carregarAjustes(); aplicarAjustes(); if(unicoPorId()+deduplicarPedidos()+(reindex(),deduplicarTitulos())+(reindex(),deduplicarParcelas())){ reindex(); aplicarAjustes(); flush(); } syncUI();
   if(D.entradas.length||D.vendas.length){ const ds=[...D.entradas.map(e=>e.date),...D.vendas.map(v=>v.date)].filter(d=>d<=HOJE).sort(); if(ds.length&&!ds.includes(HOJE)) S.dia=ds[ds.length-1]; setQuick('mes'); if(!ds.some(d=>d>=S.de)) { setQuick('tudo'); } }
   render(); ouvirTempoReal();
 })();
