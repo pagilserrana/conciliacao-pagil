@@ -801,7 +801,7 @@ function vVendas(C){
   vs.sort((a,b)=>a.date.localeCompare(b.date)||a.cliente.localeCompare(b.cliente));
   const formas=[...new Set(C.vendas.map(v=>v.forma))];
   return `<h1 class="page">Vendas</h1><p class="lede">Vendas no Pix e transferência devem aparecer no extrato (só é cobrado nos dias com extrato importado). Dinheiro e cartão ficam no caixa e na maquininha; a prazo vira recebimento.</p>
-    <div class="toolbar">${chips('vendas',[['todas',`Todas (${C.vendas.length})`],...formas.map(x=>[x,`${x} (${C.vendas.filter(v=>v.forma===x).length})`])],f)}<span class="sp"></span><button class="btn" data-act="xlsvendas">📊 Excel de vendas do mês</button><button class="btn" data-act="addvenda">Cadastrar venda</button></div>
+    <div class="toolbar">${chips('vendas',[['todas',`Todas (${C.vendas.length})`],...formas.map(x=>[x,`${x} (${C.vendas.filter(v=>v.forma===x).length})`])],f)}<span class="sp"></span><button class="btn" data-act="xlsvendas">📊 Relatório de vendas (Excel)</button><button class="btn" data-act="addvenda">Cadastrar venda</button></div>
     ${tabela(vs.map(linhaVenda),{fid:'vendas'})}`;
 }
 function vReceber(C){
@@ -1443,20 +1443,24 @@ function carregarXLSX(){ if(window.XLSX) return Promise.resolve(window.XLSX);
 function dlgExcelVendas(){
   const dlg=$('#dlg'); dlg.className='narrow'; S.dlgKind='xls';
   const meses=[...new Set(D.vendas.map(v=>v.date.slice(0,7)))].sort().reverse();
-  const ini=(S.ate||HOJE).slice(0,7);
-  dlg.innerHTML=`<div class="dlg-h"><div><h3>Excel de vendas do mês</h3><p>Planilha com todas as vendas do mês, resumo por dia, por condição de pagamento e por cliente.</p></div><button class="btn sm" data-act="close">Fechar</button></div>
-  <div class="dlg-b"><label>Mês<input id="xlsMes" class="search" type="month" value="${meses.includes(ini)?ini:(meses[0]||ini)}"></label>
-  ${meses.length?`<p class="statusline">Meses com vendas: ${meses.slice(0,12).map(m=>`${m.slice(5)}/${m.slice(0,4)} (${D.vendas.filter(v=>v.date.startsWith(m)).length})`).join(' · ')}</p>`:''}</div>
+  const ini=(S.ate||HOJE).slice(0,7); const ds=D.vendas.map(v=>v.date).sort();
+  const md=S.xlsModo||'todas';
+  dlg.innerHTML=`<div class="dlg-h"><div><h3>Relatório de vendas (Excel)</h3><p>Planilha com as vendas, resumo por mês, por dia, por condição de pagamento e por cliente.</p></div><button class="btn sm" data-act="close">Fechar</button></div>
+  <div class="dlg-b">
+    <div class="chips" style="margin-bottom:12px">${[['todas',`Todas as vendas (${D.vendas.length})`],['mes','Um mês'],['periodo','Período']].map(([k,l])=>`<button data-act="xlsmodo" data-v="${k}" aria-pressed="${md===k}">${l}</button>`).join('')}</div>
+    ${md==='todas'?`<p class="statusline">${ds.length?`De ${br(ds[0])} a ${br(ds[ds.length-1])} · ${meses.length} mês(es) · ${money(sum(D.vendas))}`:'Nenhuma venda importada.'}</p>`:''}
+    ${md==='mes'?`<label>Mês<input id="xlsMes" class="search" type="month" value="${meses.includes(ini)?ini:(meses[0]||ini)}"></label>
+      ${meses.length?`<p class="statusline">Meses com vendas: ${meses.slice(0,12).map(m=>`${m.slice(5)}/${m.slice(0,4)} (${D.vendas.filter(v=>v.date.startsWith(m)).length})`).join(' · ')}</p>`:''}`:''}
+    ${md==='periodo'?`<div class="map" style="grid-template-columns:1fr 1fr"><label>De<input id="xlsDe" class="search" type="date" value="${S.de||ds[0]||HOJE}"></label><label>Até<input id="xlsAte" class="search" type="date" value="${S.ate||HOJE}"></label></div>`:''}
+  </div>
   <div class="dlg-f"><span class="sp"></span><button class="btn" data-act="close">Cancelar</button><button class="btn primary" data-act="xlsgerar">Gerar Excel</button></div>`;
   if(!dlg.open) dlg.showModal();
 }
-async function gerarExcelVendas(mes){
+async function gerarExcelVendas(de,ate,rotulo,arq){
   const X=await carregarXLSX();
-  const [y,m]=mes.split('-').map(Number); const de=`${mes}-01`, ate=`${mes}-${String(new Date(y,m,0).getDate()).padStart(2,'0')}`;
   const sv=[S.de,S.ate]; S.de=de; S.ate=ate; let C; try{ C=calc(); } finally { S.de=sv[0]; S.ate=sv[1]; }
   const vs=C.vendas.slice().sort((a,b)=>a.date.localeCompare(b.date)||String(a.doc||'').localeCompare(String(b.doc||'')));
   if(!vs.length) return 0;
-  const nomeMes=['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'][m-1];
   const dt=d=>{ if(!d) return ''; const [a,b,c]=d.split('-').map(Number); return {v:(Date.UTC(a,b-1,c)-Date.UTC(1899,11,30))/864e5,t:'n',z:'dd/mm/yyyy'}; }; const R=c=>c/100;
   const stTxt=v=>String((ST[v._st]||['',''])[1]).replace(/^[^\p{L}]+/u,'');
   const fmtMoeda='#,##0.00', fmtData='dd/mm/yyyy';
@@ -1472,6 +1476,14 @@ async function gerarExcelVendas(mes){
   vs.forEach(v=>{ const l=LI[v.id]; L1.push([dt(v.date),v.doc||v.pedido||'',v.cliente,v.forma,v.formaTxt||v.forma,dt((v.forma==='A prazo'||v.forma==='Cheque')&&v.venc?v.venc:''),R(v.valor),stTxt(v),l?`${l.e.forma} de ${money(l.e.valor)} em ${br(l.e.date)}${l.e.pagador?' · '+l.e.pagador:''}`:'']); });
   const n1=L1.length; L1.push(['TOTAL','',`${vs.length} venda(s)`,'','','',{f:`SUBTOTAL(9,G2:G${n1})`,v:R(sum(vs)),t:'n'},'','']);
   X.utils.book_append_sheet(wb,folha(L1,9,[11,14,38,13,24,12,14,22,44],[6],[0,5],true),'Vendas');
+  // 1b. Por mês (quando há mais de um mês)
+  const ms=[...new Set(vs.map(v=>v.date.slice(0,7)))].sort();
+  if(ms.length>1){ const fm=[...new Set(vs.map(v=>v.forma))].sort((a,b)=>sum(vs.filter(v=>v.forma===b))-sum(vs.filter(v=>v.forma===a)));
+    const cl_=i=>X.utils.encode_col(i); const NM=['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
+    const LM=[['Mês',...fm,'Total do mês','Nº vendas','Ticket médio']];
+    ms.forEach((mm,i)=>{ const mv=vs.filter(v=>v.date.startsWith(mm)); const r=i+2; LM.push([`${NM[+mm.slice(5)-1]}/${mm.slice(0,4)}`,...fm.map(f=>R(sum(mv.filter(v=>v.forma===f)))),{f:`SUM(B${r}:${cl_(fm.length)}${r})`,v:R(sum(mv)),t:'n'},mv.length,{f:`${cl_(fm.length+1)}${r}/${cl_(fm.length+2)}${r}`,v:R(sum(mv))/mv.length,t:'n'}]); });
+    const nm=LM.length; LM.push(['TOTAL',...fm.map((f,i)=>({f:`SUM(${cl_(i+1)}2:${cl_(i+1)}${nm})`,v:R(sum(vs.filter(v=>v.forma===f))),t:'n'})),{f:`SUM(${cl_(fm.length+1)}2:${cl_(fm.length+1)}${nm})`,v:R(sum(vs)),t:'n'},{f:`SUM(${cl_(fm.length+2)}2:${cl_(fm.length+2)}${nm})`,v:vs.length,t:'n'},{f:`${cl_(fm.length+1)}${nm+1}/${cl_(fm.length+2)}${nm+1}`,v:R(sum(vs))/vs.length,t:'n'}]);
+    X.utils.book_append_sheet(wb,folha(LM,fm.length+4,[10,...fm.map(()=>14),15,10,13],[...fm.map((f,i)=>i+1),fm.length+1,fm.length+3],[],true),'Por mês'); }
   // 2. Resumo por dia × forma
   const formas=[...new Set(vs.map(v=>v.forma))].sort((a,b)=>sum(vs.filter(v=>v.forma===b))-sum(vs.filter(v=>v.forma===a)));
   const dias=[...new Set(vs.map(v=>v.date))].sort();
@@ -1482,20 +1494,20 @@ async function gerarExcelVendas(mes){
   X.utils.book_append_sheet(wb,folha(L2,formas.length+3,[11,...formas.map(()=>14),15,10],[...formas.map((f,i)=>i+1),formas.length+1],[0],true),'Resumo por dia');
   // 3. Por condição de pagamento
   const gs=gruposCondicao(vs); const tot=sum(vs);
-  const L3=[['Condição','Nº vendas','Valor (R$)','% do mês']];
+  const L3=[['Condição','Nº vendas','Valor (R$)','% do total']];
   gs.forEach((g,i)=>L3.push([g.label,g.itens.length,R(g.total),{f:`C${i+2}/C${gs.length+2}`,v:tot?g.total/tot:0,t:'n',z:'0.0%'}]));
   L3.push(['TOTAL',{f:`SUM(B2:B${gs.length+1})`,v:vs.length,t:'n'},{f:`SUM(C2:C${gs.length+1})`,v:R(tot),t:'n'},{f:`SUM(D2:D${gs.length+1})`,v:1,t:'n',z:'0.0%'}]);
   X.utils.book_append_sheet(wb,folha(L3,4,[26,11,15,10],[2],[],true),'Por condição');
   // 4. Por cliente
   const pc={}; vs.forEach(v=>{ const k=v.cliente||'—'; (pc[k]=pc[k]||{n:0,t:0,ped:new Set()}); pc[k].t+=v.valor; if(v.pedido||v.doc) pc[k].ped.add(v.pedido||v.doc); pc[k].n++; });
   const cl=Object.entries(pc).sort((a,b)=>b[1].t-a[1].t);
-  const L4=[['Cliente','Nº pedidos','Valor (R$)','% do mês']];
+  const L4=[['Cliente','Nº pedidos','Valor (R$)','% do total']];
   cl.forEach(([k,x],i)=>L4.push([k,x.ped.size||x.n,R(x.t),{f:`C${i+2}/C${cl.length+2}`,v:tot?x.t/tot:0,t:'n',z:'0.0%'}]));
   L4.push(['TOTAL',{f:`SUM(B2:B${cl.length+1})`,v:cl.reduce((a,[,x])=>a+(x.ped.size||x.n),0),t:'n'},{f:`SUM(C2:C${cl.length+1})`,v:R(tot),t:'n'},{f:`SUM(D2:D${cl.length+1})`,v:1,t:'n',z:'0.0%'}]);
   X.utils.book_append_sheet(wb,folha(L4,4,[42,11,15,10],[2],[],true),'Por cliente');
-  wb.Props={Title:`Vendas ${nomeMes} ${y}`,Author:'Conciliação diária'};
+  wb.Props={Title:`Vendas ${rotulo}`,Author:'Conciliação diária · Pagil Serrana'};
   const out=X.write(wb,{bookType:'xlsx',type:'array'});
-  await baixar(`vendas-${mes}.xlsx`,new Blob([out],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}));
+  await baixar(`vendas-${arq}.xlsx`,new Blob([out],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}));
   return vs.length;
 }
 async function baixar(nome,data,mime){
@@ -1588,8 +1600,12 @@ document.addEventListener('click',async ev=>{
     case 'recarregar': recarregarDaPlanilha(false); break;
     case 'apagardia': dlgApagarDia(); break;
     case 'xlsvendas': dlgExcelVendas(); break;
-    case 'xlsgerar': { const mes=($('#xlsMes')||{}).value; if(!/^\d{4}-\d{2}$/.test(mes||'')){ toast('Escolha o mês.'); break; }
-      toast('Gerando o Excel…'); try{ const n=await gerarExcelVendas(mes); if(!n){ toast('Nenhuma venda nesse mês.'); break; } S._noRender=true; $('#dlg').close(); S._noRender=false; toast(`📊 Excel com ${n} venda(s) de ${mes.slice(5)}/${mes.slice(0,4)} baixado.`); }
+    case 'xlsmodo': S.xlsModo=t.dataset.v; dlgExcelVendas(); break;
+    case 'xlsgerar': { const md=S.xlsModo||'todas'; let de,ate,rot,arq;
+      if(md==='todas'){ const ds=D.vendas.map(v=>v.date).sort(); if(!ds.length){ toast('Nenhuma venda importada.'); break; } de=ds[0]; ate=ds[ds.length-1]; rot=`${br(de)} a ${br(ate)}`; arq=`todas-${de}-a-${ate}`; }
+      else if(md==='mes'){ const mes=($('#xlsMes')||{}).value; if(!/^\d{4}-\d{2}$/.test(mes||'')){ toast('Escolha o mês.'); break; } const [y,m]=mes.split('-').map(Number); de=`${mes}-01`; ate=`${mes}-${String(new Date(y,m,0).getDate()).padStart(2,'0')}`; rot=`${mes.slice(5)}/${mes.slice(0,4)}`; arq=mes; }
+      else { de=($('#xlsDe')||{}).value; ate=($('#xlsAte')||{}).value; if(!de||!ate||de>ate){ toast('Confira as datas do período.'); break; } rot=`${br(de)} a ${br(ate)}`; arq=`${de}-a-${ate}`; }
+      toast('Gerando o Excel…'); try{ const n=await gerarExcelVendas(de,ate,rot,arq); if(!n){ toast('Nenhuma venda nesse período.'); break; } S._noRender=true; $('#dlg').close(); S._noRender=false; toast(`📊 Excel com ${n} venda(s) (${rot}) baixado.`); }
       catch(e){ console.error(e); toast(e.message||'Não consegui gerar o Excel.',6000); } break; }
     case 'apagardiaok': { const sel={}; ['entradas','vendas','receber','saidas','servicos'].forEach(k=>{ const c=$('#ap_'+k); sel[k]=!!(c&&c.checked&&!c.disabled); });
       if(!Object.values(sel).some(Boolean)){ toast('Marque o que deseja apagar.'); break; }
