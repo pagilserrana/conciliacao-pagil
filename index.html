@@ -435,8 +435,13 @@ async function carregarAjustes(){
 function salvarConc(e){ if(e.resto&&e.st!=='ok'&&e.st!=='conf') delete e.resto;
   const v={st:e.st,links:e.links||[],motivo:e.motivo||'',t:new Date().toISOString()}; if(e.resto) v.resto=e.resto; return gravarAjuste('conc',e.id,v); }
 // parte da entrada que não é venda (ex.: boleto que liquidou um título + um serviço): fica registrada com o valor
-function parteResto(e){ if(!e.resto||(e.st!=='ok'&&e.st!=='conf')) return null; const r=e.resto;
+function parteResto(e){ if(!e.resto||e.resto.tipo==='desc'||(e.st!=='ok'&&e.st!=='conf')) return null; const r=e.resto;
   return Object.assign(Object.create(e),{valor:r.valor,motivo:(r.tipo==='serv'?'Parte de serviço':'Parte de acerto')+(r.desc&&!/^(Servi[çc]o|Acerto)$/.test(r.desc)?' · '+r.desc:''),_parte:true}); }
+// diferença negativa (o que foi marcado soma mais que a entrada): só precisa de uma justificativa (desconto, abatimento…)
+function justificarNegativo(e,ids){
+  const tot=sum(ids.map(i=>IDX[i]).filter(Boolean)); const dif=tot-e.valor; if(dif<=0){ delete e.resto; return true; }
+  const d=prompt(`Os lançamentos marcados somam ${money(tot)} e entrou ${money(e.valor)}: diferença de ${money(dif)}.\nJustifique (ex.: desconto, abatimento, tarifa do banco, arredondamento):`,'Desconto');
+  if(d===null) return false; e.resto={tipo:'desc',valor:dif,desc:d.trim()||'Desconto'}; return true; }
 function marcarResto(e,ids,tipo){
   const tot=sum(ids.map(i=>IDX[i]).filter(Boolean)); const dif=e.valor-tot; const nome=tipo==='serv'?'serviço':'acerto';
   if(dif<=0){ toast('O que foi marcado já cobre o valor da entrada; não sobra diferença.'); return false; }
@@ -470,7 +475,7 @@ function touch(col,x){ markDirty(col,gkey(col,x)); }
 async function recarregarDaPlanilha(silencioso){
   if(!db){ if(!silencioso) toast('Modo de teste: os dados estão neste navegador.'); return; }
   await flush();
-  try{ await Store.init(); for(const col of COLS){ D[col]=await Store.loadAll(col); D[col].forEach(x=>x.col=col); } reindex(); await carregarAjustes(); aplicarAjustes(); if(unicoPorId()+deduplicarPedidos(true)+(reindex(),deduplicarTitulos(true))+(reindex(),deduplicarParcelas())){ reindex(); aplicarAjustes(); flush(); }
+  try{ await Store.init(); for(const col of COLS){ D[col]=await Store.loadAll(col); D[col].forEach(x=>x.col=col); } reindex(); await carregarAjustes(); aplicarAjustes(); if(migrarDados()+unicoPorId()+deduplicarPedidos(true)+(reindex(),deduplicarTitulos(true))+(reindex(),deduplicarParcelas())){ reindex(); aplicarAjustes(); flush(); }
     Sync.state='ok'; syncUI(); refresh(); if(!silencioso) toast('Dados atualizados.'); }
   catch(e){ toast('Não consegui ler o Firebase: '+traduzErro(e),7000); }
 }
@@ -939,6 +944,7 @@ function dividirLinha(r){
   const conc=`Parte do ${e.forma} de ${money(e.valor)} em ${br(e.date)}`+(e.pagador?` · pagador ${e.pagador}`:'');
   const partes=xs.map(x=>Object.assign({},r,{orig:x.col==='receber'?(x.parcial?'parcial':'titulo'):'venda',cliente:x.cliente,valor:x.valor,doc:refDe(x.id),sub:conc}));
   const resto=r.valor-sum(partes);
+  if(resto<0&&e.resto&&e.resto.tipo==='desc'){ partes.push(Object.assign({},r,{orig:partes[0].orig,cliente:clienteDaEntrada(e),valor:resto,doc:'Desconto · '+e.resto.desc,sub:conc})); return partes; }
   if(resto){ const ehServ=servResto&&resto===e.resto.valor;
     partes.push(Object.assign({},r,{orig:ehServ?'serv':'semvinc',cliente:clienteDaEntrada(e),valor:resto,doc:ehServ?'Serviço'+(e.resto.desc&&!/^Servi[çc]o$/.test(e.resto.desc)?' · '+e.resto.desc:''):'Diferença sem vínculo',sub:conc})); }
   return partes;
@@ -1001,7 +1007,7 @@ function desenhaConc(){ S.dlgKind='cc';
       <span><b>${esc(k.x.cliente)}</b><span class="small">${k.tipo==='venda'?`Venda ${esc(k.x.doc||'—')} · ${br(k.x.date)} · ${esc(k.x.forma)}`:`Título ${esc(k.x.doc||'—')} · vence ${br(k.x.venc)}`}${k.valorOk?' · mesmo valor':''}${k.ns>=0.5?' · nome confere':''}</span></span>
       <span class="v">${money(k.x.valor)}</span></div>`).join(''):'<div class="empty">Nada encontrado. Pesquise pelo nome do cliente ou pelo valor.</div>'}
   </div>
-  <div class="dlg-f"><span class="sumline">Selecionado <b>${money(selTot)}</b> · diferença <b class="${dif===0?'ok':'bad'}">${money(dif)}</b>${e.resto?`<br><span class="small">Já registrado: ${money(e.resto.valor)} de ${e.resto.tipo==='serv'?'serviço':'acerto'}</span>`:''}${S.cc.sel.size&&dif>0?'<br><span class="small">Sobrou diferença? Use “Diferença é serviço” ou “Diferença é acerto”.</span>':''}</span><span class="sp"></span>
+  <div class="dlg-f"><span class="sumline">Selecionado <b>${money(selTot)}</b> · diferença <b class="${dif===0?'ok':'bad'}">${money(dif)}</b>${e.resto?`<br><span class="small">Já registrado: ${e.resto.tipo==='desc'?`${esc(e.resto.desc)} de ${money(e.resto.valor)}`:`${money(e.resto.valor)} de ${e.resto.tipo==='serv'?'serviço':'acerto'}`}</span>`:''}${S.cc.sel.size&&dif>0?'<br><span class="small">Sobrou diferença? Use “Diferença é serviço” ou “Diferença é acerto”.</span>':''}${S.cc.sel.size&&dif<0?'<br><span class="small">Diferença negativa: ao confirmar, informe o motivo (desconto, abatimento…).</span>':''}</span><span class="sp"></span>
     <button class="btn" data-act="close">Cancelar</button>
     ${S.cc.sel.size&&dif>0?`<button class="btn" data-act="ccrestoserv" title="Liga o que está marcado e registra o restante como serviço">Diferença é serviço</button>
     <button class="btn" data-act="ccrestoacerto" title="Liga o que está marcado e registra o restante como acerto">Diferença é acerto</button>`:`<button class="btn" data-act="ccserv" title="Pagamento de serviço prestado (mão de obra, locação…)">É serviço</button>
@@ -1233,22 +1239,34 @@ function formaPag(cond,venc,date){ const c=pnorm(cond);
   if(venc&&date&&venc>date) return 'A prazo';
   if(/PIX/.test(c)) return 'Pix'; if(/DINHEIRO|ESPECIE/.test(c)) return 'Dinheiro'; if(/DEPOSITO|TRANSF/.test(c)) return 'Transferência';
   if(/BOLETO|DIAS|\bDD\b|\d+\/\d+/.test(c)) return 'A prazo'; return 'Outros'; }
+// nome do cliente sem as colunas que vêm depois dele (status, natureza da operação, frete, valor)
+function limparCliente(s){ s=String(s||'').replace(/-?\s*R\$\s*[\d.]+,\d{2}/g,' ').replace(/\s+/g,' ').trim(); let m;
+  while((m=/\s*\b(Pedido Balc[ãa]o|Romaneio|Faturado|Cancelado|Or[çc]amento|Venda|Bonifica[çc][ãa]o)$/i.exec(s))&&m.index>=0){ s=s.slice(0,m.index).trim(); if(!s) break; }
+  return s; }
+// "Listar Pedido por Data" (CGI). Aceita o formato antigo e o novo (coluna "Valor Frete" e nome longo quebrado em duas linhas,
+// uma acima e outra abaixo do nº do pedido). O valor do pedido é sempre o último "R$" da linha.
 function lerVendasRel(L){
-  const ped=[]; let date=null,cur=null,pend=null,meta=null;
-  for(const raw of L){ const segs=raw.split(' | ').map(s=>s.trim()); const l=segs.join(' '); let m;
-    if(/^\d{2}\/\d{2}\/\d{4}$/.test(l)){ date=b2i(l); cur=null; pend=null; continue; }
-    if((m=/Total de Registros:\s*(\d+).*Total\.*:\s*([\d.]+,\d{2})/.exec(l))){ meta={n:+m[1],total:pMoney(m[2])}; cur=null; continue; }
-    if(/^T[íi]tulos\.*:/.test(l)){ cur=null; pend=null; continue; }
+  const ped=[]; let date=null,cur=null,pend=null,meta=null,pre=[];
+  for(const raw of L){ const segs=raw.split(' | ').map(s=>s.trim()); let l=segs.join(' '); let m;
+    if(/^\d{2}\/\d{2}\/\d{4}$/.test(l)){ date=b2i(l); cur=null; pend=null; pre=[]; continue; }
+    if((m=/Total de Registros:\s*(\d+).*Total\.*:\s*([\d.]+,\d{2})/.exec(l))){ meta={n:+m[1],total:pMoney(m[2])}; cur=null; pre=[]; continue; }
+    if(/^T[íi]tulos\.*:/.test(l)){ cur=null; pend=null; pre=[]; continue; }
+    if(/^Pedido \| N[ºo°]/i.test(raw)||/^(Pedido - Por Data|Pedidos Emitidos|Filtros:|ListarPedido)/i.test(l)){ pre=[]; continue; }
     if(date&&/^\d{2}\.\d{6}-[A-Z0-9]+$/.test(segs[0])&&/R\$\s*[\d.]+,\d{2}$/.test(l)){
       const mv=/(-?)\s*R\$\s*([\d.]+,\d{2})$/.exec(l); const total=(mv[1]?-1:1)*pMoney(mv[2]);
-      let s=l.replace(/\s*-?\s*R\$\s*[\d.]+,\d{2}$/,'').slice(segs[0].length).trim();
-      if(/^\d+$/.test(segs[1]||'')&&segs.length>4) s=s.slice(segs[1].length).trim();
-      if((m=/\s*(Pedido Balc[ãa]o|Romaneio|Faturado)$/.exec(s))) s=s.slice(0,m.index).trim();
-      if((m=/\s*(Faturado|Romaneio|Cancelado|Or[çc]amento)$/.exec(s))) s=s.slice(0,m.index).trim();
-      cur={pedido:segs[0],date,cliente:s,total,pags:[]}; ped.push(cur); pend=null; continue; }
-    if(cur){ if((m=/^(.+?)\s+(\d{2}\/\d{2}\/\d{4})\s+R\$:\s*([\d.,]+)?$/.exec(l))){ const p={cond:m[1].trim(),venc:b2i(m[2]),valor:m[3]?pDot(m[3]):0}; cur.pags.push(p); pend=m[3]?null:p; continue; }
-      if(pend&&/^[\d.,]+$/.test(l)){ pend.valor=pDot(l); pend=null; } }
+      const resto=segs.slice(/^\d+$/.test(segs[1]||'')?2:1);
+      const nome=limparCliente(resto.join(' '));
+      cur={pedido:segs[0],date,cliente:[...pre,nome].filter(Boolean).join(' ').trim(),total,pags:[]}; ped.push(cur); pend=null; pre=[]; continue; }
+    // "Total Frete do Dia...:" pode vir na mesma linha do último vencimento
+    l=l.replace(/^Total Frete do Dia\.*:\s*([\d.]+,\d{2})?\s*/i,'');
+    if((m=/^(.+?)\s+(\d{2}\/\d{2}\/\d{4})\s+R\$:\s*([\d.,]+)?$/.exec(l))){ if(cur){ const p={cond:m[1].trim(),venc:b2i(m[2]),valor:m[3]?pDot(m[3]):0}; cur.pags.push(p); pend=m[3]?null:p; } continue; }
+    if(pend&&/^[\d.,]+$/.test(l)){ pend.valor=pDot(l); pend=null; continue; }
+    // pedaço do nome do cliente quebrado em outra linha (acima ou abaixo do nº do pedido)
+    if(date&&segs.length===1&&/[A-Za-zÀ-ú]{2}/.test(l)&&!/[:$]/.test(l)&&!/CGI ERP|P[áa]g\.|^Total/i.test(l)){
+      if(cur&&!cur.pags.length) cur.cliente=(cur.cliente+' '+l).trim(); else pre.push(l);
+      continue; }
   }
+  ped.forEach(p=>{ if(!p.cliente) p.cliente='Cliente não informado'; });
   return {ped,meta};
 }
 function lerPedidoUnico(L){
@@ -1283,12 +1301,13 @@ function lerReceber(L){
     if(r){ if(nome.length){ cli=nome.join(' ').replace(/\s+/g,' ').trim(); nome=[]; }
       const status=r[4], parcial=/PARCIAL/i.test(pnorm(status)), pago=parcial||/PAGO TOTAL|QUITAD|LIQUIDAD/i.test(pnorm(status)), dataPag=r[5]?b2i(r[5]):'';
       const saldo=pMoney(r[9]), vt=pMoney(r[10]), vp=pMoney(r[7]), juros=pMoney(r[8]);
-      const valor=pago?(parcial?vp:(vp||vt))+juros:(saldo||vt);
+      // pago: vale o Vlr. Pago do relatório (já inclui os juros; não somar de novo)
+      const valor=pago?(vp||vt):(saldo||vt);
       const venc=b2i(r[6]);
       // pago parcial: cada pagamento parcial é um registro próprio (título + data + valor pago); guarda o saldo que falta
       const idBase=parcial?`${r[2]}|${r[3]}|${venc}|P|${dataPag}|${vp}`:`${r[2]}|${venc}|${pago?vt:valor}`;
       it.push({col:'receber',id:'r'+hashStr(idBase),titulo:r[3],doc:r[3],pedido:r[2],emissao:b2i(r[1]),venc,valor,cliente:cli||'Cliente não informado',
-        baixado:pago,dataBaixa:pago?dataPag:'',status,origem:'contas',juros,valorAlt:juros?(parcial?vp:(vp||vt)):0,
+        baixado:pago,dataBaixa:pago?dataPag:'',status,origem:'contas',juros,valorAlt:juros&&pago&&!parcial&&vt&&vt!==(vp||vt)?vt:0,jurosVP:true,
         parcial,saldo:parcial?saldo:0,valorTit:vt,chequeTxt:/CHEQUE|\bCHQ\b|\bCH\.? ?PRE|PRE-?DATADO/.test(pnorm(l))}); continue; }
     const idx=segs.findIndex(s=>/^(Cr[ée]dito|Total)$/i.test(s)); const np=(idx===-1?segs:segs.slice(0,idx)).join(' ').trim();
     if(np&&!/^(Cr[ée]dito|Total|Saldo)/i.test(np)) nome.push(np); }
@@ -1317,6 +1336,14 @@ function fotoTitulos(){ const m={}; D.receber.forEach(r=>{ if(r.origem==='venda'
 function compararFotos(antesP,antesT,pedNovos,titNovos){ let n=0; const dP=fotoPedidos(), dT=fotoTitulos();
   pedNovos.forEach(p=>{ const a=antesP[p], d=dP[p]; if(a&&d&&a.valor!==d.valor&&registrarTroca('Pedido',p,d.cliente,{valor:a.valor,data:a.data,ref:[...a.formas].join(' + ')},{valor:d.valor,data:d.data,ref:[...d.formas].join(' + ')})) n++; });
   titNovos.forEach(k=>{ const a=antesT[k], d=dT[k]; if(a&&d&&a.valor!==d.valor&&registrarTroca('Título',(d.titulo||k)+(d.pedido?` · Doc. ${d.pedido}`:''),d.cliente,{valor:a.valor,data:a.data,ref:a.titulo||''},{valor:d.valor,data:d.data,ref:d.titulo||''})) n++; });
+  return n; }
+// ajustes em dados já salvos por versões anteriores
+function migrarDados(){ let n=0;
+  // Contas a Receber: título pago vale o Vlr. Pago (antes os juros eram somados de novo)
+  D.receber.forEach(r=>{ if(r.origem==='contas'&&r.baixado&&r.juros>0&&!r.jurosVP){ r.valor=Math.max(0,r.valor-r.juros); r.valorAlt=(!r.parcial&&r.valorTit&&r.valorTit!==r.valor)?r.valorTit:0; r.jurosVP=true; touch('receber',r); n++; } });
+  // nomes de cliente que vieram com "Romaneio", "Faturado" ou "R$ 0,00" (formato novo do Listar Pedido)
+  D.vendas.forEach(v=>{ if(/R\$|\b(Romaneio|Faturado)\s*$/.test(v.cliente||'')){ v.cliente=limparCliente(v.cliente)||'Cliente não informado'; touch('vendas',v); n++; } });
+  D.receber.forEach(r=>{ if(r.origem==='venda'&&/R\$|\b(Romaneio|Faturado)\s*$/.test(r.cliente||'')){ r.cliente=limparCliente(r.cliente)||'Cliente não informado'; touch('receber',r); n++; } });
   return n; }
 function substituirItens(mapa){ // mapa: id removido -> item que fica (ou null)
   if(!mapa.size) return 0;
@@ -1486,7 +1513,7 @@ function gerarPdf(){
   const difs=[...C.ni.map(e=>['Entrou sem dono',br(e.date),e.pagador||e.desc.slice(0,40),'—',m(e.valor)]),
     ...C.vendasNaoEntrou.map(v=>['Venda sem entrada no banco',br(v.date),v.cliente,'Venda '+(v.doc||'—'),m(v.valor)]),
     ...C.baixaNaoEntrou.map(r=>['Baixa Pix sem entrada no banco',br(r.dataBaixa),r.cliente,'Título '+(r.doc||'—'),m(r.valor)]),
-    ...C.ok.concat(C.conf).filter(e=>!e._parte&&e.links&&e.links.length&&sum(e.links.map(i=>IDX[i]).filter(Boolean))+(e.resto?e.resto.valor:0)!==e.valor).map(e=>['Valor diferente do documento',br(e.date),clienteDaEntrada(e),(e.links||[]).map(refDe).join(', '),m(e.valor-sum(e.links.map(i=>IDX[i]).filter(Boolean))-(e.resto?e.resto.valor:0))])];
+    ...C.ok.concat(C.conf).filter(e=>!e._parte&&e.links&&e.links.length&&sum(e.links.map(i=>IDX[i]).filter(Boolean))+(e.resto?(e.resto.tipo==='desc'?-e.resto.valor:e.resto.valor):0)!==e.valor).map(e=>['Valor diferente do documento',br(e.date),clienteDaEntrada(e),(e.links||[]).map(refDe).join(', '),m(e.valor-sum(e.links.map(i=>IDX[i]).filter(Boolean))-(e.resto?(e.resto.tipo==='desc'?-e.resto.valor:e.resto.valor):0))])];
   H('Diferenças',`Entradas sem dono ${m(sum(C.ni))} · vendas Pix/transferência sem entrada no banco ${m(sum(C.vendasNaoEntrou))} · títulos atrasados ${m(sum(C.atrasados))} (${C.atrasados.length}, listados em Recebimentos em aberto).`);
   if(difs.length) T({head:[['Tipo','Data','Cliente / pagador','Documento','Valor']],body:difs,columnStyles:{0:{cellWidth:44,fontStyle:'bold',textColor:RD},1:{cellWidth:18},3:{cellWidth:34},4:{halign:'right',cellWidth:24}},didParseCell:d=>{ if(d.section==='head'&&d.column.index===4) d.cell.styles.halign='right'; }});
   else { doc.setFontSize(9); doc.setTextColor(...G); doc.text('Nenhuma diferença no período.',M,y); y+=8; }
@@ -1627,7 +1654,7 @@ document.addEventListener('click',async ev=>{
     case 'dnext': S.dia=addDays(S.dia,1); S.selE=null; render(); break;
     case 'dsel': { if(!id||S.selE===id){ S.selE=null; } else { S.selE=id; const e=IDX[id]; S.selItens=new Set(e.links||[]); S.dq=''; } refresh(); break; }
     case 'ditem': { S.selItens.has(id)?S.selItens.delete(id):S.selItens.add(id); refresh(); break; }
-    case 'dlink': { const e=IDX[S.selE]; if(!e||!S.selItens.size) break; delete e.resto; e.links=[...S.selItens]; e.st='ok'; e.auto=false; e.manual=true; e.motivo='Vinculado no lançamento do dia'; touch('entradas',e); salvarConc(e); S.selE=null; refresh(e.id); agendarConciliacao(); toast(`🟢 ${money(e.valor)} vinculado a ${clienteDaEntrada(e)}.`); break; }
+    case 'dlink': { const e=IDX[S.selE]; if(!e||!S.selItens.size) break; if(!justificarNegativo(e,[...S.selItens])) break; e.links=[...S.selItens]; e.st='ok'; e.auto=false; e.manual=true; e.motivo='Vinculado no lançamento do dia'+(e.resto?` · ${e.resto.desc} de ${money(e.resto.valor)}`:''); touch('entradas',e); salvarConc(e); S.selE=null; refresh(e.id); agendarConciliacao(); toast(`🟢 ${money(e.valor)} vinculado a ${clienteDaEntrada(e)}.`); break; }
     case 'dout': { const e=IDX[S.selE]; if(!e) break; e.links=[]; e.st='out'; e.manual=true; e.motivo='Não é venda (transferência própria, estorno etc.)'; touch('entradas',e); salvarConc(e); S.selE=null; refresh(e.id); agendarConciliacao(); break; }
     case 'desfaz': { const e=IDX[id]; if(!e) break; e.links=[]; e.st='ni'; e.auto=false; e.manual=true; e.motivo='Vínculo desfeito'; touch('entradas',e); salvarConc(e); refresh(e.id); toast('Vínculo desfeito. A entrada voltou para 🔴 Não identificado.'); break; }
     case 'det': abrirDet(t.dataset.k,t.dataset.f); break;
@@ -1639,7 +1666,7 @@ document.addEventListener('click',async ev=>{
     case 'alvo': abrirAlvo(id); break;
     case 'alvopick': { const e=IDX[t.dataset.e]; abrirConc(e.id,[...(e.st==='ok'?e.links:[]),id]); break; }
     case 'ccsel': { const sc=($('#dlg .dlg-b')||{}).scrollTop||0; S.cc.sel.has(id)?S.cc.sel.delete(id):S.cc.sel.add(id); desenhaConc(); const b=$('#dlg .dlg-b'); if(b) b.scrollTop=sc; break; }
-    case 'ccok': { const e=IDX[S.cc.id]; delete e.resto; e.links=[...S.cc.sel]; e.st='ok'; e.auto=false; e.manual=true; e.motivo='Conferido manualmente'; touch('entradas',e); salvarConc(e); S._noRender=true; $('#dlg').close(); S._noRender=false; refresh(e.id); agendarConciliacao(); toast(`🟢 Conciliado: ${money(e.valor)} de ${clienteDaEntrada(e)}.`); break; }
+    case 'ccok': { const e=IDX[S.cc.id]; if(!justificarNegativo(e,[...S.cc.sel])) break; e.links=[...S.cc.sel]; e.st='ok'; e.auto=false; e.manual=true; e.motivo='Conferido manualmente'+(e.resto?` · ${e.resto.desc} de ${money(e.resto.valor)}`:''); touch('entradas',e); salvarConc(e); S._noRender=true; $('#dlg').close(); S._noRender=false; refresh(e.id); agendarConciliacao(); toast(`🟢 Conciliado: ${money(e.valor)} de ${clienteDaEntrada(e)}.`); break; }
     case 'ccrestoserv': case 'ccrestoacerto': { const e=IDX[S.cc.id]; const tp=a==='ccrestoserv'?'serv':'acerto'; if(!marcarResto(e,[...S.cc.sel],tp)) break; S._noRender=true; $('#dlg').close(); S._noRender=false; refresh(e.id); agendarConciliacao(); toast(`${e.st==='ok'?'🟢':'🟡'} ${money(e.valor)}: ${money(e.valor-e.resto.valor)} em títulos/vendas + ${money(e.resto.valor)} de ${tp==='serv'?'serviço':'acerto'}.`,5000); break; }
     case 'drestoserv': case 'drestoacerto': { const e=IDX[S.selE]; if(!e) break; const tp=a==='drestoserv'?'serv':'acerto'; if(!marcarResto(e,[...S.selItens],tp)) break; S.selE=null; refresh(e.id); agendarConciliacao(); toast(`${e.st==='ok'?'🟢':'🟡'} ${money(e.resto.valor)} de ${tp==='serv'?'serviço':'acerto'} registrado.`); break; }
     case 'ccserv': { const e=IDX[S.cc.id]; const d=pedirDescServico(); if(d===null) break; marcarServico(e,d); S._noRender=true; $('#dlg').close(); S._noRender=false; refresh(e.id); toast(`🔵 ${money(e.valor)} marcado como serviço.`); break; }
@@ -1751,7 +1778,7 @@ $('#dlg').addEventListener('close',()=>{ if(S._noRender) return; if(S.tab!=='imp
   if(est==='config'){ telaConfig(); return; } if(est==='login'){ telaLogin(); return; }
   try{ await Store.init(); }catch(e){ telaLogin('Não consegui ler os dados: '+traduzErro(e)); return; }
   for(const col of COLS){ D[col]=await Store.loadAll(col); D[col].forEach(x=>x.col=col); }
-  reindex(); await carregarAjustes(); aplicarAjustes(); if(unicoPorId()+deduplicarPedidos(true)+(reindex(),deduplicarTitulos(true))+(reindex(),deduplicarParcelas())){ reindex(); aplicarAjustes(); flush(); } syncUI();
+  reindex(); await carregarAjustes(); aplicarAjustes(); if(migrarDados()+unicoPorId()+deduplicarPedidos(true)+(reindex(),deduplicarTitulos(true))+(reindex(),deduplicarParcelas())){ reindex(); aplicarAjustes(); flush(); } syncUI();
   if(D.entradas.length||D.vendas.length){ const ds=[...D.entradas.map(e=>e.date),...D.vendas.map(v=>v.date)].filter(d=>d<=HOJE).sort(); if(ds.length&&!ds.includes(HOJE)) S.dia=ds[ds.length-1]; setQuick('mes'); if(!ds.some(d=>d>=S.de)) { setQuick('tudo'); } }
   render(); ouvirTempoReal();
 })();
