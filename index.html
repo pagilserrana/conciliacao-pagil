@@ -125,7 +125,10 @@ td .small,.small{display:block;font-size:12.5px;color:var(--ink-2)}
 .st.conf{background:var(--amber-soft);color:var(--amber)}
 .st.ni{background:var(--red-soft);color:var(--red)}
 .st.out{background:var(--blue-soft);color:var(--blue)}
-.st.serv{background:#EDE4F6;color:#7A4BA8} .st.acer{background:#F6E4EF;color:#A0457A}
+.st.serv{background:#EDE4F6;color:#7A4BA8}
+.moved{display:block;width:fit-content;margin-top:3px;padding:1px 7px;border-radius:5px;font-size:11.5px;font-weight:700;background:#FFE7CC;color:#9A4A00;white-space:nowrap}
+:root[data-theme="dark"] .moved{background:#4A2C0E;color:#FFB86B}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .moved{background:#4A2C0E;color:#FFB86B}} .st.acer{background:#F6E4EF;color:#A0457A}
 @media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .st.serv{background:#2E2340;color:#C7A6EC} :root:not([data-theme="light"]) .st.acer{background:#3A2231;color:#E7A6CC}}
 .st.neu{background:var(--paper);color:var(--ink-2);border:1px solid var(--line)}
 .toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:0 0 12px}
@@ -678,11 +681,13 @@ function calc(){
   const abertos=receberAll.filter(r=>!r.baixado&&(!LI[r.id]||LI[r.id].st!=='ok'));
   const atrasados=abertos.filter(r=>r.venc<HOJE);
   const previstos=abertos.filter(r=>r.venc>=HOJE);
+  // no Painel e no relatório: só o que vence dentro do período escolhido (valor real daquele período)
+  const abertosP=abertos.filter(r=>inP(r.venc)), atrasadosP=atrasados.filter(r=>inP(r.venc)), previstosP=previstos.filter(r=>inP(r.venc));
   const recebidosTit=receberAll.filter(r=>(LI[r.id]&&LI[r.id].st==='ok'&&inP(LI[r.id].e.date))||(r.baixado&&inP(r.dataBaixa)));
   const vendasNaoEntrou=vendas.filter(v=>v._st==='nao'&&v.date<HOJE);
   const baixaNaoEntrou=[]; // título baixado com forma escolhida à mão conta como identificado
   const byst=st=>entradas.filter(e=>e.st===st);
-  return {LI,vendas,entradas,porForma,recebido,abertos,atrasados,previstos,recebidosTit,vendasNaoEntrou,baixaNaoEntrou,
+  return {LI,vendas,entradas,porForma,recebido,abertos,atrasados,previstos,abertosP,atrasadosP,previstosP,recebidosTit,vendasNaoEntrou,baixaNaoEntrou,
     ok:byst('ok'),conf:byst('conf'),ni:byst('ni'),out:byst('out'),serv:[...byst('serv'),...entradas.map(parteResto).filter(x=>x&&x.resto.tipo==='serv')],acerto:[...byst('acerto'),...entradas.map(parteResto).filter(x=>x&&x.resto.tipo==='acerto')],servMan,saidas,
     tVendas:sum(vendas),tEntradas:sum(entradas.filter(e=>e.st!=='out')),statusAlvo};
 }
@@ -700,7 +705,7 @@ function origemEntrada(e){ if(e.st==='serv') return 'serv'; if(e.st==='acerto') 
 function origemReceber(r,LI){ if(r.parcial) return 'parcial'; if(r.baixado||(LI[r.id]&&LI[r.id].st==='ok')) return 'titulo'; return 'aberto'; }
 function linhaEntrada(e){ return {orig:origemEntrada(e),cliente:clienteDaEntrada(e),sub:(e.banco==='Bradesco'?'Bradesco · ':'')+(e.pagador&&clienteDaEntrada(e)!==e.pagador?'Pagador no extrato: '+e.pagador:e.desc),valor:e.valor,data:e.date,
   doc:(e.links||[]).map(refDe).join(', ')||'—',st:e.st,act:`data-act="conc" data-id="${e.id}"`,forma:e.forma,item:e}; }
-function linhaVenda(v){ return {orig:'venda',cliente:v.cliente,sub:v.formaTxt||v.forma,valor:v.valor,data:v.date,doc:'Venda '+(v.doc||'—'),st:v._st||'nao',
+function linhaVenda(v){ return {orig:'venda',cliente:v.cliente,sub:v.formaTxt||v.forma,valor:v.valor,data:v.date,dataAnt:v.dataAnterior&&v.dataAnterior<v.date?v.dataAnterior:'',doc:'Venda '+(v.doc||'—'),st:v._st||'nao',
   act:(v.forma==='Pix'||v.forma==='Transferência'||v.forma==='Outros')?`data-act="alvo" data-id="${v.id}"`:'',forma:v.forma,
   extra:v._e?`Entrou ${brs(v._e.date)} · ${v._e.pagador||v._e.desc}`:(v.forma==='Cheque'&&v.venc&&v.venc>v.date?`Bom para ${brs(v.venc)}`:''),item:v}; }
 function caixaDin(C){ const ent=C.porForma['Dinheiro'].total; const sai=sum(C.saidas.filter(x=>x.forma==='Dinheiro')); return {ent,sai,saldo:ent-sai}; }
@@ -709,7 +714,7 @@ function linhaServ(x){ return {orig:'serv',cliente:x.cliente,sub:x.desc||'Servi�
 function linhaItem(i,LI){ return i.k==='serv'?linhaServ(i.x):i.k==='venda'?linhaVenda(i.x):i.k==='rec'?Object.assign(linhaReceber(i.x,LI),{data:i.x.dataBaixa}):Object.assign(linhaEntrada(i.x),i.v!=null?{valor:i.v}:{},i.x._parte?{sub:i.x.motivo}:{}); }
 function linhaReceber(r,LI){ const l=LI[r.id]; const st=r.parcial?'parcial':l&&l.st==='ok'?'recebido':r.baixado?(!r.formaRec?'baixado':'identificado'):r.venc<HOJE?'atraso':'aberto';
   return {orig:origemReceber(r,LI),cliente:r.cliente,sub:(r.pedido?'Pedido '+r.pedido:'')+(r.juros?` · inclui juros ${money(r.juros)}`:'')+(r.parcial?` · pago ${money(r.valor)} de ${money(r.valorTit)} · falta ${money(r.saldo)}`:''),valor:r.valor,data:r.venc,doc:'Título '+(r.doc||'—'),st,act:`data-act="alvo" data-id="${r.id}"`,item:r.baixado?r:null,
-    extra:l?`${l.st==='ok'?'Pago':'Possível pagamento'} em ${brs(l.e.date)} · ${l.e.pagador||''}`:r.baixado?(!r.formaRec?`Baixado em ${brs(r.dataBaixa)} · escolha a forma de recebimento`:`Baixado em ${brs(r.dataBaixa)} · recebido em ${r.formaRec.toLowerCase()}`):(r.venc<HOJE?`${dayDiff(r.venc,HOJE)} dia(s) de atraso`:(r.venc===HOJE?'vence hoje':`vence em ${dayDiff(HOJE,r.venc)} dia(s)`))}; }
+    extra:l?`${l.st==='ok'?'Pago':'Possível pagamento'} em ${brs(l.e.date)} · ${l.e.pagador||''}`:r.baixado?(!r.formaRec?`Baixado em ${brs(r.dataBaixa)} · escolha a forma de recebimento`:`${r.baixaManual?'Baixa manual':'Baixado'} em ${brs(r.dataBaixa)} · recebido em ${r.formaRec.toLowerCase()}`):(r.venc<HOJE?`${dayDiff(r.venc,HOJE)} dia(s) de atraso`:(r.venc===HOJE?'vence hoje':`vence em ${dayDiff(HOJE,r.venc)} dia(s)`))}; }
 
 /* ============ renderização ============ */
 /* ---- atualização imediata da tela (mantém rolagem, janela aberta e destaca o que mudou) ---- */
@@ -755,8 +760,8 @@ function vPainel(C){
     ${card('g','Quem pagou?','🟢 Conciliados',money(sum(C.ok)),`${C.ok.length} crédito(s) · ${pOk}% do banco`,'data-act="det" data-k="ok"')}
     ${card('a','Precisa olhar','🟡 Conferir',money(sum(C.conf)),`${C.conf.length} crédito(s) com possível dono`,'data-act="det" data-k="conf"')}
     ${card('r','O que entrou sem dono?','🔴 Não identificados',money(sum(C.ni)),`${C.ni.length} crédito(s)`,'data-act="det" data-k="ni"')}
-    ${card('b','O que temos a receber?','Recebimentos em aberto',money(sum(C.previstos)),`${C.previstos.length} título(s) a vencer`,'data-act="det" data-k="previstos"')}
-    ${card('r','O que deveria ter entrado?','Atrasados / não entrou',money(sum(C.atrasados)+sum(C.vendasNaoEntrou)+sum(C.baixaNaoEntrou)),`${C.atrasados.length} título(s) vencido(s) · ${C.vendasNaoEntrou.length} venda(s) Pix`,'data-act="det" data-k="atrasados"')}
+    ${card('b','O que temos a receber?','Recebimentos em aberto',money(sum(C.previstosP)),`${C.previstosP.length} título(s) a vencer no período`,'data-act="det" data-k="previstos"')}
+    ${card('r','O que deveria ter entrado?','Atrasados / não entrou',money(sum(C.atrasadosP)+sum(C.vendasNaoEntrou)+sum(C.baixaNaoEntrou)),`${C.atrasadosP.length} título(s) vencido(s) no período · ${C.vendasNaoEntrou.length} venda(s) Pix`,'data-act="det" data-k="atrasados"')}
     ${card('r','O que saiu do caixa?','💸 Saídas',money(sum(C.saidas)),`${C.saidas.length} lançamento(s) · saldo do caixa ${money(caixaDin(C).saldo)}`,'data-act="det" data-k="saidas"')}
     ${card('b','O que não é venda?','🔵 Serviços',money(sum(C.serv)+sum(C.servMan)),`${C.serv.length} pelo banco · ${C.servMan.length} cadastrado(s)`,'data-act="det" data-k="serv"')}
   </div>`;
@@ -799,7 +804,7 @@ function tabela(rows,opt={}){
   if(!rows.length) return filtro+'<div class="panel empty">Nenhum lançamento.</div>';
   const saldoP=rows.filter(r=>r.orig==='parcial'&&r.item&&r.item.saldo).reduce((a,r)=>a+r.item.saldo,0);
   return filtro+`<div class="scroll"><table><thead><tr><th>Cliente</th><th class="num">Valor</th><th>${opt.dataLabel||'Data'}</th><th>Forma</th><th>Venda / documento</th><th>Status</th></tr></thead><tbody>
-    ${rows.map(r=>`<tr class="${r.act?'click':''}" ${r.act||''} ${r.act?'tabindex="0"':''}><td><b>${esc(r.cliente)}</b>${r.sub?`<span class="small">${esc(String(r.sub).slice(0,90))}</span>`:''}</td><td class="num"><b>${money(r.valor)}</b></td><td>${br(r.data)}</td><td>${r.item?formaCell(r.item):'<span class="small">—</span>'}</td><td>${esc(r.doc)}${r.orig&&ORIG[r.orig]?`<span class="otag o-${r.orig}">${{venda:'Venda',titulo:'Título pago',parcial:'Pago parcial',serv:'Serviço',aberto:'Título em aberto',semvinc:'Sem vínculo'}[r.orig]}</span>`:''}${r.extra?`<span class="small">${esc(r.extra)}</span>`:''}</td><td>${stHtml(r.st)}${r.st==='parcial'&&r.item?`<span class="small" style="color:var(--amber)">Saldo ${money(r.item.saldo)}</span>`:''}</td></tr>`).join('')}
+    ${rows.map(r=>`<tr class="${r.act?'click':''}" ${r.act||''} ${r.act?'tabindex="0"':''}><td><b>${esc(r.cliente)}</b>${r.sub?`<span class="small">${esc(String(r.sub).slice(0,90))}</span>`:''}</td><td class="num"><b>${money(r.valor)}</b></td><td>${br(r.data)}${r.dataAnt?`<span class="moved" title="O sistema mudou a data deste pedido (nota emitida ou pedido editado)">🔁 era ${br(r.dataAnt)}</span>`:''}</td><td>${r.item?formaCell(r.item):'<span class="small">—</span>'}</td><td>${esc(r.doc)}${r.orig&&ORIG[r.orig]?`<span class="otag o-${r.orig}">${{venda:'Venda',titulo:'Título pago',parcial:'Pago parcial',serv:'Serviço',aberto:'Título em aberto',semvinc:'Sem vínculo'}[r.orig]}</span>`:''}${r.extra?`<span class="small">${esc(r.extra)}</span>`:''}</td><td>${stHtml(r.st)}${r.st==='parcial'&&r.item?`<span class="small" style="color:var(--amber)">Saldo ${money(r.item.saldo)}</span>`:''}</td></tr>`).join('')}
     </tbody><tfoot><tr><td>${rows.length} lançamento(s)</td><td class="num">${money(sum(rows))}</td><td colspan="4">${saldoP?`Saldo restante dos parciais: <b style="color:var(--amber)">${money(saldoP)}</b>`:''}</td></tr></tfoot></table></div>`;
 }
 function chips(name,opts,cur){ return `<div class="chips">${opts.map(([k,l])=>`<button data-act="filtro" data-n="${name}" data-v="${k}" aria-pressed="${cur===k}">${l}</button>`).join('')}</div>`; }
@@ -815,11 +820,12 @@ function vBanco(C){
 }
 function vVendas(C){
   const f=S.filtro.vendas||'todas';
-  let vs=C.vendas.slice(); if(f!=='todas') vs=vs.filter(v=>v.forma===f);
+  const movidas=C.vendas.filter(v=>v.dataAnterior&&v.dataAnterior<v.date);
+  let vs=C.vendas.slice(); if(f==='movidas') vs=movidas; else if(f!=='todas') vs=vs.filter(v=>v.forma===f);
   vs.sort((a,b)=>a.date.localeCompare(b.date)||a.cliente.localeCompare(b.cliente));
   const formas=[...new Set(C.vendas.map(v=>v.forma))];
   return `<h1 class="page">Vendas</h1><p class="lede">Vendas no Pix e transferência devem aparecer no extrato (só é cobrado nos dias com extrato importado). Dinheiro e cartão ficam no caixa e na maquininha; a prazo vira recebimento.</p>
-    <div class="toolbar">${chips('vendas',[['todas',`Todas (${C.vendas.length})`],...formas.map(x=>[x,`${x} (${C.vendas.filter(v=>v.forma===x).length})`])],f)}<span class="sp"></span><button class="btn" data-act="xlsvendas">📊 Relatório de vendas (Excel)</button><button class="btn" data-act="addvenda">Cadastrar venda</button></div>
+    <div class="toolbar">${chips('vendas',[['todas',`Todas (${C.vendas.length})`],...formas.map(x=>[x,`${x} (${C.vendas.filter(v=>v.forma===x).length})`]),...(movidas.length?[['movidas',`🔁 Mudaram de data (${movidas.length})`]]:[])],f)}<span class="sp"></span><button class="btn" data-act="xlsvendas">📊 Relatório de vendas (Excel)</button><button class="btn" data-act="addvenda">Cadastrar venda</button></div>
     ${tabela(vs.map(linhaVenda),{fid:'vendas'})}`;
 }
 function vReceber(C){
@@ -966,9 +972,9 @@ function abrirDet(k,f){
   else if(k==='entradas'){ titulo='Entradas no banco'; rows=C.entradas.filter(e=>e.st!=='out').map(linhaEntrada); grupos=[...new Set(C.entradas.map(e=>e.forma))]; }
   else if(['ok','conf','ni'].includes(k)){ titulo=ST[k][1]; sub=k==='ok'?'Entradas com venda ou título identificado.':k==='conf'?'Existe uma possibilidade, mas precisa da sua confirmação. Toque para conferir.':'Dinheiro que entrou sem venda ou título correspondente. Toque para escolher manualmente.';
     rows=C[k].map(linhaEntrada); grupos=[...new Set(C[k].map(e=>e.forma))]; }
-  else if(k==='previstos'){ titulo='Recebimentos em aberto (a vencer)'; sub='Quem ainda deve pagar, valor e data prevista.'; rows=C.previstos.slice().sort((a,b)=>a.venc.localeCompare(b.venc)).map(r=>linhaReceber(r,LI)); dl='Vencimento'; }
+  else if(k==='previstos'){ titulo='Recebimentos em aberto (a vencer)'; sub='Quem ainda deve pagar, valor e data prevista.'; rows=C.previstosP.slice().sort((a,b)=>a.venc.localeCompare(b.venc)).map(r=>linhaReceber(r,LI)); dl='Vencimento'; }
   else if(k==='atrasados'){ titulo='Deveria ter entrado'; sub='Títulos vencidos sem pagamento identificado e vendas no Pix/transferência do período que não aparecem no extrato.';
-    rows=[...C.atrasados.slice().sort((a,b)=>a.venc.localeCompare(b.venc)).map(r=>Object.assign(linhaReceber(r,LI),{forma:'Títulos vencidos'})),...C.vendasNaoEntrou.map(v=>Object.assign(linhaVenda(v),{forma:'Vendas sem entrada'})),...C.baixaNaoEntrou.map(r=>Object.assign(linhaReceber(r,LI),{data:r.dataBaixa,forma:'Baixas Pix sem entrada'}))];
+    rows=[...C.atrasadosP.slice().sort((a,b)=>a.venc.localeCompare(b.venc)).map(r=>Object.assign(linhaReceber(r,LI),{forma:'Títulos vencidos'})),...C.vendasNaoEntrou.map(v=>Object.assign(linhaVenda(v),{forma:'Vendas sem entrada'})),...C.baixaNaoEntrou.map(r=>Object.assign(linhaReceber(r,LI),{data:r.dataBaixa,forma:'Baixas Pix sem entrada'}))];
     grupos=['Títulos vencidos','Vendas sem entrada','Baixas Pix sem entrada']; dl='Data / vencimento'; }
   rows=rows.flatMap(dividirLinha);
   S.det={titulo,sub,rows,grupos,g:'todos',dl,k,f}; desenhaDet();
@@ -1019,6 +1025,13 @@ function desenhaConc(){ S.dlgKind='cc';
   const qi=$('#ccq'); if(qi&&S.cc.focus){ qi.focus(); qi.setSelectionRange(qi.value.length,qi.value.length); S.cc.focus=false; }
 }
 // a partir de uma venda ou título: procurar a entrada correspondente
+function dlgBaixaManual(id){ const r=IDX[id]; if(!r) return; const dlg=$('#dlg'); dlg.className='narrow'; S.dlgKind='baixa';
+  dlg.innerHTML=`<div class="dlg-h"><div><h3>Dar baixa: ${esc(r.cliente)} · ${money(r.valor)}</h3><p>Título ${esc(r.doc||'—')}${r.pedido?' · pedido '+esc(r.pedido):''}, vence ${br(r.venc)}. Use quando o cliente já pagou e o pagamento não está no extrato nem no Contas a Receber.</p></div><button class="btn sm" data-act="close">Fechar</button></div>
+  <div class="dlg-b"><div class="map" style="grid-template-columns:1fr 1fr"><label>Recebido em<input id="bxDt" class="search" type="date" value="${HOJE}"></label>
+    <label>Forma<select id="bxForma" class="search">${OPC.receber.filter(f=>f!=='Não informada').map(f=>`<option>${f}</option>`).join('')}</select></label></div>
+    <p class="statusline">Sai de "Atrasados / em aberto" e passa a contar como recebido na data e forma escolhidas.</p></div>
+  <div class="dlg-f"><span class="sp"></span><button class="btn" data-act="close">Cancelar</button><button class="btn primary" data-act="bxsalvar" data-id="${r.id}">Dar baixa</button></div>`;
+  if(!dlg.open) dlg.showModal(); }
 function abrirAlvo(id){ S.dlgKind='alvo'; S.alvoId=id;
   const x=IDX[id]; if(!x) return; const LI=linkIndex();
   if(LI[id]){ abrirConc(LI[id].e.id); return; }
@@ -1028,6 +1041,7 @@ function abrirAlvo(id){ S.dlgKind='alvo'; S.alvoId=id;
   const dlg=$('#dlg'); dlg.className='narrow';
   dlg.innerHTML=`<div class="dlg-h"><div><h3>${esc(x.cliente)} · ${money(x.valor)}</h3><p>${x.col==='vendas'?`Venda ${esc(x.doc||'—')} de ${br(x.date)}`:`Título ${esc(x.doc||'—')}, vence ${br(x.venc)}`}. Escolha a entrada do banco que pagou.</p>${(x.col==='vendas'||x.baixado)?`<p style="margin-top:8px">Forma de recebimento: ${formaCell(x)}</p>`:''}</div><button class="btn sm" data-act="close">Fechar</button></div>
   <div class="dlg-b">${es.length?es.map(o=>`<div class="cand" data-act="alvopick" data-e="${o.e.id}" data-id="${x.id}" tabindex="0"><span></span><span><b>${esc(o.e.pagador||o.e.desc)}</b><span class="small">${br(o.e.date)} · ${esc(o.e.forma)}${o.valorOk?' · mesmo valor':''}${o.ns>=0.5?' · nome confere':''} · ${esc(ST[o.e.st][1])}</span></span><span class="v">${money(o.e.valor)}</span></div>`).join(''):'<div class="empty">Nenhuma entrada do banco livre. Importe o extrato do período.</div>'}</div>`;
+  if(x.col==='receber') dlg.insertAdjacentHTML('beforeend',`<div class="dlg-f"><span class="sp"></span>${x.baixaManual?`<button class="btn danger" data-act="bxdesfaz" data-id="${x.id}">Desfazer baixa manual</button>`:(!x.baixado?`<button class="btn" data-act="bxmanual" data-id="${x.id}">✔ Já foi recebido (dar baixa)</button>`:'')}</div>`);
   if(!dlg.open) dlg.showModal();
 }
 
@@ -1371,7 +1385,9 @@ function deduplicarPedidos(log){
     const dMax=vs.reduce((a,v)=>v.date>a?v.date:a,''); const naData=vs.filter(v=>v.date===dMax);
     const lMax=Math.max(...naData.map(v=>v.lote||0)); const ficam=naData.filter(v=>(v.lote||0)===lMax);
     const saem=vs.filter(v=>!ficam.includes(v)); if(!saem.length) continue;
-    if(saem.some(v=>v.date!==dMax)){ movidos++; if(S._pedMov) S._pedMov.add(ped); }
+    if(saem.some(v=>v.date!==dMax)){ movidos++; if(S._pedMov) S._pedMov.add(ped);
+      const ant=saem.map(v=>v.dataAnterior&&v.dataAnterior<dMax?v.dataAnterior:v.date).filter(d=>d<dMax).sort().pop();
+      if(ant) ficam.forEach(f=>{ if(f.dataAnterior!==ant&&!(f.dataAnterior&&f.dataAnterior<dMax&&f.dataAnterior>ant)){ f.dataAnterior=ant; touch('vendas',f); } }); }
     if(log){ const porData={}; saem.forEach(v=>{ (porData[v.date]=porData[v.date]||[]).push(v); }); const tf=sum(ficam);
       for(const d in porData){ const tv=sum(porData[d]); if(tv!==tf) registrarTroca('Pedido',ped,ficam[0].cliente,{valor:tv,data:d,ref:[...new Set(porData[d].map(v=>v.forma))].join(' + ')},{valor:tf,data:dMax,ref:[...new Set(ficam.map(v=>v.forma))].join(' + ')}); } }
     const livres=ficam.slice();
@@ -1380,17 +1396,27 @@ function deduplicarPedidos(log){
   substituirItens(mapa); return movidos;
 }
 const chaveTitulo=r=>{ const suf=(String(r.titulo||'').match(/-([^-]+)$/)||[])[1]||String(r.titulo||''); return (r.pedido||r.titulo||'')+'|'+suf; };
+function preferirBaixaManual(rs){ if(rs[0].baixado) return; const i=rs.findIndex(r=>r.baixaManual); if(i>0) rs.unshift(rs.splice(i,1)[0]); }
 function deduplicarTitulos(log){
   const g={}; D.receber.forEach(r=>{ if(r.origem==='venda'||r.parcial||!(r.pedido||r.titulo)) return; const k=chaveTitulo(r); (g[k]=g[k]||[]).push(r); });
   const mapa=new Map(); let n=0;
   for(const k in g){ const rs=g[k]; if(rs.length<2) continue;
     rs.sort((a,b)=>((b.lote||0)-(a.lote||0))||((b.baixado?1:0)-(a.baixado?1:0))||String(b.dataBaixa||'').localeCompare(String(a.dataBaixa||''))||String(b.emissao||'').localeCompare(String(a.emissao||''))||String(b.venc||'').localeCompare(String(a.venc||'')));
+    preferirBaixaManual(rs);
     rs.slice(1).forEach(r=>{ mapa.set(r.id,rs[0]); if(log) registrarTroca('Título',(rs[0].titulo||k)+(rs[0].pedido?` · Doc. ${rs[0].pedido}`:''),rs[0].cliente,{valor:r.valorTit||r.valor,data:r.dataBaixa||r.venc,ref:r.titulo||''},{valor:rs[0].valorTit||rs[0].valor,data:rs[0].dataBaixa||rs[0].venc,ref:rs[0].titulo||''}); }); n+=rs.length-1; }
   // mesmo número de título com Doc. Nº diferente: também é o mesmo título
   const g2={}; D.receber.forEach(r=>{ if(mapa.has(r.id)||r.origem==='venda'||r.parcial||!r.titulo) return; (g2[r.titulo]=g2[r.titulo]||[]).push(r); });
   for(const k in g2){ const rs=g2[k]; if(rs.length<2) continue;
     rs.sort((a,b)=>((b.lote||0)-(a.lote||0))||((b.baixado?1:0)-(a.baixado?1:0))||String(b.dataBaixa||'').localeCompare(String(a.dataBaixa||''))||String(b.emissao||'').localeCompare(String(a.emissao||'')));
+    preferirBaixaManual(rs);
     rs.slice(1).forEach(r=>{ mapa.set(r.id,rs[0]); if(log) registrarTroca('Título',k,rs[0].cliente,{valor:r.valorTit||r.valor,data:r.dataBaixa||r.venc,ref:'Doc. '+(r.pedido||'—')},{valor:rs[0].valorTit||rs[0].valor,data:rs[0].dataBaixa||rs[0].venc,ref:'Doc. '+(rs[0].pedido||'—')}); }); n+=rs.length-1; }
+  // título em aberto que já teve pagamento parcial depois: fica só o saldo (ou some, se o saldo zerou)
+  const g3={}; D.receber.forEach(r=>{ if(mapa.has(r.id)||r.origem==='venda'||!(r.pedido||r.titulo)) return; (g3[chaveTitulo(r)]=g3[chaveTitulo(r)]||[]).push(r); });
+  for(const k in g3){ const ps=g3[k].filter(r=>r.parcial); if(!ps.length) continue;
+    ps.sort((a,b)=>((b.lote||0)-(a.lote||0))||String(b.dataBaixa||'').localeCompare(String(a.dataBaixa||'')));
+    const pu=ps[0];
+    g3[k].filter(r=>!r.baixado&&!r.parcial&&(pu.lote||0)>=(r.lote||0)).forEach(r=>{
+      if(!(pu.saldo>0)){ mapa.set(r.id,pu); n++; } else if(r.valor!==pu.saldo){ r.valor=pu.saldo; r.saldoDoParcial=true; touch('receber',r); n++; } }); }
   substituirItens(mapa); return n;
 }
 function deduplicarParcelas(){
@@ -1405,7 +1431,8 @@ function deduplicarParcelas(){
       if(!ok.length) continue;
       ok.sort((a,b)=>Math.abs(dayDiff(a.venc,p.venc))-Math.abs(dayDiff(b.venc,p.venc)));
       const t=ok[0]; if(Math.abs(dayDiff(t.venc,p.venc))>45) continue;
-      usados.add(t.id); fora.set(p.id,t); }
+      usados.add(t.id); fora.set(p.id,t);
+      if(p.baixaManual&&!t.baixado){ Object.assign(t,{baixado:true,dataBaixa:p.dataBaixa,formaRec:p.formaRec,baixaManual:true,status:'Baixa manual'}); touch('receber',t); } }
   }
   if(!fora.size) return 0;
   D.entradas.forEach(e=>{ if(!(e.links||[]).some(l=>fora.has(l))) return;
@@ -1433,8 +1460,8 @@ async function importarPdfs(files){
   const LOTE=Date.now(); S._jaMovido=0; S._pedMov=new Set(); const fotoP=fotoPedidos(), fotoT=fotoTitulos(); const pedNovos=new Set(), titNovos=new Set();
   const add=(col,x)=>{ if(col==='vendas'||col==='receber') x.lote=LOTE; if(col==='vendas'&&x.pedido) pedNovos.add(x.pedido); if(col==='receber'&&x.origem==='contas'&&!x.parcial&&(x.pedido||x.titulo)) titNovos.add(chaveTitulo(x));
     const ex=IDX[x.id]; if(ex&&ex.col===col&&col==='vendas'&&ex.date>x.date){ S._jaMovido=(S._jaMovido||0)+1; return 0; } // pedido já está numa data mais nova
-    if(ex&&ex.col===col){ const k0=gkey(col,ex); const keep={st:ex.st,links:ex.links,auto:ex.auto,manual:ex.manual,motivo:ex.motivo,resto:ex.resto}; if(!keep.resto) delete keep.resto;
-      Object.assign(ex,x,col==='entradas'?keep:{}); if(k0!==gkey(col,ex)){ markDirty(col,k0); if(col==='vendas'&&ex.pedido) S._pedMov.add(ex.pedido); } touch(col,ex); return 0; }
+    if(ex&&ex.col===col){ const k0=gkey(col,ex); const bm=col==='receber'&&ex.baixaManual&&!x.baixado?{baixado:true,dataBaixa:ex.dataBaixa,formaRec:ex.formaRec,baixaManual:true,status:'Baixa manual',lote:ex.lote}:null; const keep={st:ex.st,links:ex.links,auto:ex.auto,manual:ex.manual,motivo:ex.motivo,resto:ex.resto}; if(!keep.resto) delete keep.resto;
+      Object.assign(ex,x,col==='entradas'?keep:{},bm||{}); if(k0!==gkey(col,ex)){ markDirty(col,k0); if(col==='vendas'&&ex.pedido){ S._pedMov.add(ex.pedido); if(k0<ex.date) ex.dataAnterior=k0; } } touch(col,ex); return 0; }
     if(col==='entradas'){ x.st='ni'; x.links=[]; } D[col].push(x); IDX[x.id]=x; touch(col,x); return 1; };
   for(const f of files){
     try{ const L=await pdfLines(f); const t=tipoPdf(L);
@@ -1496,7 +1523,7 @@ function gerarPdf(){
   const bx=(W-2*M-9)/4; const kpis=[['Entradas no banco',C.tEntradas,INK],['Conciliado',sum(C.ok),G],['Conferir',sum(C.conf),AM],['Não identificado',sum(C.ni),RD]];
   kpis.forEach(([l,v,c],i)=>{ const x=M+i*(bx+3); doc.setDrawColor(...c); doc.setLineWidth(.5); doc.line(x,y,x+bx,y); doc.setFontSize(8); doc.setTextColor(...MUT); doc.text(l,x,y+5); doc.setFont('helvetica','bold'); doc.setFontSize(12.5); doc.setTextColor(...c); doc.text(m(v),x,y+11.5); doc.setFont('helvetica','normal'); });
   y+=19;
-  const kpis2=[['Vendas',C.tVendas,INK],['Recebido (todas as formas)',C.recebido,INK],['A receber (a vencer)',sum(C.previstos),BL],['Atrasado / não entrou',sum(C.atrasados)+sum(C.vendasNaoEntrou),RD]];
+  const kpis2=[['Vendas',C.tVendas,INK],['Recebido (todas as formas)',C.recebido,INK],['A receber (a vencer)',sum(C.previstosP),BL],['Atrasado / não entrou',sum(C.atrasadosP)+sum(C.vendasNaoEntrou),RD]];
   kpis2.forEach(([l,v,c],i)=>{ const x=M+i*(bx+3); doc.setDrawColor(...c); doc.setLineWidth(.5); doc.line(x,y,x+bx,y); doc.setFontSize(8); doc.setTextColor(...MUT); doc.text(l,x,y+5); doc.setFont('helvetica','bold'); doc.setFontSize(12.5); doc.setTextColor(...c); doc.text(m(v),x,y+11.5); doc.setFont('helvetica','normal'); });
   y+=21;
   H('Recebido por forma','Pix, transferência, boleto e depósito conforme o extrato; dinheiro e cartão conforme as vendas.');
@@ -1514,7 +1541,7 @@ function gerarPdf(){
     ...C.vendasNaoEntrou.map(v=>['Venda sem entrada no banco',br(v.date),v.cliente,'Venda '+(v.doc||'—'),m(v.valor)]),
     ...C.baixaNaoEntrou.map(r=>['Baixa Pix sem entrada no banco',br(r.dataBaixa),r.cliente,'Título '+(r.doc||'—'),m(r.valor)]),
     ...C.ok.concat(C.conf).filter(e=>!e._parte&&e.links&&e.links.length&&sum(e.links.map(i=>IDX[i]).filter(Boolean))+(e.resto?(e.resto.tipo==='desc'?-e.resto.valor:e.resto.valor):0)!==e.valor).map(e=>['Valor diferente do documento',br(e.date),clienteDaEntrada(e),(e.links||[]).map(refDe).join(', '),m(e.valor-sum(e.links.map(i=>IDX[i]).filter(Boolean))-(e.resto?(e.resto.tipo==='desc'?-e.resto.valor:e.resto.valor):0))])];
-  H('Diferenças',`Entradas sem dono ${m(sum(C.ni))} · vendas Pix/transferência sem entrada no banco ${m(sum(C.vendasNaoEntrou))} · títulos atrasados ${m(sum(C.atrasados))} (${C.atrasados.length}, listados em Recebimentos em aberto).`);
+  H('Diferenças',`Entradas sem dono ${m(sum(C.ni))} · vendas Pix/transferência sem entrada no banco ${m(sum(C.vendasNaoEntrou))} · títulos atrasados ${m(sum(C.atrasadosP))} (${C.atrasadosP.length}, listados em Recebimentos em aberto).`);
   if(difs.length) T({head:[['Tipo','Data','Cliente / pagador','Documento','Valor']],body:difs,columnStyles:{0:{cellWidth:44,fontStyle:'bold',textColor:RD},1:{cellWidth:18},3:{cellWidth:34},4:{halign:'right',cellWidth:24}},didParseCell:d=>{ if(d.section==='head'&&d.column.index===4) d.cell.styles.halign='right'; }});
   else { doc.setFontSize(9); doc.setTextColor(...G); doc.text('Nenhuma diferença no período.',M,y); y+=8; }
   // detalhamento dos pagamentos
@@ -1539,8 +1566,8 @@ function gerarPdf(){
   if(vc.length){ H('Vendas em dinheiro, cartão e cheque','Conferir com o caixa, a maquininha e os cheques recebidos na loja.');
     T({head:[['Data','Forma','Cliente','Venda','Valor']],body:vc.map(v=>[brs(v.date),v.forma,v.cliente,v.doc||'—',m(v.valor)]),foot:[[{content:`${vc.length} venda(s)`,colSpan:4},m(sum(vc))]],columnStyles:{0:{cellWidth:12},4:{halign:'right',cellWidth:24}},didParseCell:d=>{ if(d.section!=='body'&&d.column.index===4) d.cell.styles.halign='right'; }}); }
   // a receber
-  H('Recebimentos em aberto',`A vencer ${m(sum(C.previstos))} (${C.previstos.length}) · atrasados ${m(sum(C.atrasados))} (${C.atrasados.length}). Posição em ${br(HOJE)}.`);
-  const ab=C.abertos.slice().sort((a,b)=>a.venc.localeCompare(b.venc));
+  H('Recebimentos em aberto',`A vencer ${m(sum(C.previstosP))} (${C.previstosP.length}) · atrasados ${m(sum(C.atrasadosP))} (${C.atrasadosP.length}). Títulos com vencimento no período · posição em ${br(HOJE)}.`);
+  const ab=C.abertosP.slice().sort((a,b)=>a.venc.localeCompare(b.venc));
   if(ab.length) T({head:[['Vencimento','Cliente','Documento','Valor','Status']],body:ab.map(r=>[br(r.venc),r.cliente,r.doc||'—',m(r.valor),stCol(r.venc<HOJE?'atraso':'aberto')]),foot:[[{content:`${ab.length} título(s)`,colSpan:3},m(sum(ab)),'']],
     columnStyles:{0:{cellWidth:20},3:{halign:'right',cellWidth:24},4:{cellWidth:20}},didParseCell:d=>{ if(d.section!=='body'&&d.column.index===3) d.cell.styles.halign='right'; }});
   if(y>255){doc.addPage();y=24;} y+=10; doc.setDrawColor(...INK); doc.setLineWidth(.3);
@@ -1583,10 +1610,10 @@ async function gerarExcelVendas(de,ate,rotulo,arq){
   const wb=X.utils.book_new();
   // 1. Vendas
   const LI=C.LI;
-  const L1=[['Data','Pedido','Cliente','Forma','Condição de pagamento','Vencimento','Valor (R$)','Status','Conciliação no banco']];
-  vs.forEach(v=>{ const l=LI[v.id]; L1.push([dt(v.date),v.doc||v.pedido||'',v.cliente,v.forma,v.formaTxt||v.forma,dt((v.forma==='A prazo'||v.forma==='Cheque')&&v.venc?v.venc:''),R(v.valor),stTxt(v),l?`${l.e.forma} de ${money(l.e.valor)} em ${br(l.e.date)}${l.e.pagador?' · '+l.e.pagador:''}`:'']); });
-  const n1=L1.length; L1.push(['TOTAL','',`${vs.length} venda(s)`,'','','',{f:`SUBTOTAL(9,G2:G${n1})`,v:R(sum(vs)),t:'n'},'','']);
-  X.utils.book_append_sheet(wb,folha(L1,9,[11,14,38,13,24,12,14,22,44],[6],[0,5],true),'Vendas');
+  const L1=[['Data','Pedido','Cliente','Forma','Condição de pagamento','Vencimento','Valor (R$)','Status','Conciliação no banco','Data anterior (mudou de data)']];
+  vs.forEach(v=>{ const l=LI[v.id]; L1.push([dt(v.date),v.doc||v.pedido||'',v.cliente,v.forma,v.formaTxt||v.forma,dt((v.forma==='A prazo'||v.forma==='Cheque')&&v.venc?v.venc:''),R(v.valor),stTxt(v),l?`${l.e.forma} de ${money(l.e.valor)} em ${br(l.e.date)}${l.e.pagador?' · '+l.e.pagador:''}`:'',dt(v.dataAnterior&&v.dataAnterior<v.date?v.dataAnterior:'')]); });
+  const n1=L1.length; L1.push(['TOTAL','',`${vs.length} venda(s)`,'','','',{f:`SUBTOTAL(9,G2:G${n1})`,v:R(sum(vs)),t:'n'},'','','']);
+  X.utils.book_append_sheet(wb,folha(L1,10,[11,14,38,13,24,12,14,22,44,16],[6],[0,5,9],true),'Vendas');
   // 1b. Por mês (quando há mais de um mês)
   const ms=[...new Set(vs.map(v=>v.date.slice(0,7)))].sort();
   if(ms.length>1){ const fm=[...new Set(vs.map(v=>v.forma))].sort((a,b)=>sum(vs.filter(v=>v.forma===b))-sum(vs.filter(v=>v.forma===a)));
@@ -1664,6 +1691,12 @@ document.addEventListener('click',async ev=>{
     case 'filtro': S.filtro[t.dataset.n]=t.dataset.v; render(); break;
     case 'conc': abrirConc(id); break;
     case 'alvo': abrirAlvo(id); break;
+    case 'bxmanual': dlgBaixaManual(id); break;
+    case 'bxsalvar': { const r=IDX[id]; const dt=($('#bxDt')||{}).value; if(!r||!dt){ toast('Escolha a data.'); break; }
+      Object.assign(r,{baixado:true,dataBaixa:dt,formaRec:$('#bxForma').value,baixaManual:true,status:'Baixa manual',lote:Date.now()}); touch('receber',r);
+      S._noRender=true; $('#dlg').close(); S._noRender=false; reindex(); refresh(r.id); toast(`✔ ${r.cliente} ${money(r.valor)}: baixa manual em ${br(dt)} (${r.formaRec}).`); break; }
+    case 'bxdesfaz': { const r=IDX[id]; if(!r) break; Object.assign(r,{baixado:false,dataBaixa:'',formaRec:'',status:'Aberto'}); delete r.baixaManual; touch('receber',r);
+      S._noRender=true; $('#dlg').close(); S._noRender=false; refresh(r.id); toast('Baixa manual desfeita: o título voltou para em aberto.'); break; }
     case 'alvopick': { const e=IDX[t.dataset.e]; abrirConc(e.id,[...(e.st==='ok'?e.links:[]),id]); break; }
     case 'ccsel': { const sc=($('#dlg .dlg-b')||{}).scrollTop||0; S.cc.sel.has(id)?S.cc.sel.delete(id):S.cc.sel.add(id); desenhaConc(); const b=$('#dlg .dlg-b'); if(b) b.scrollTop=sc; break; }
     case 'ccok': { const e=IDX[S.cc.id]; if(!justificarNegativo(e,[...S.cc.sel])) break; e.links=[...S.cc.sel]; e.st='ok'; e.auto=false; e.manual=true; e.motivo='Conferido manualmente'+(e.resto?` · ${e.resto.desc} de ${money(e.resto.valor)}`:''); touch('entradas',e); salvarConc(e); S._noRender=true; $('#dlg').close(); S._noRender=false; refresh(e.id); agendarConciliacao(); toast(`🟢 Conciliado: ${money(e.valor)} de ${clienteDaEntrada(e)}.`); break; }
