@@ -309,7 +309,7 @@ function setForma(id,val){
 }
 const formaSel=(x,cur)=>`<select class="fsel" data-act="forma" data-id="${x.id}" aria-label="Forma de recebimento">${OPC[x.col].map(o=>`<option ${o===cur?'selected':''}>${o}</option>`).join('')}</select>`;
 function formaCell(x){ if(!x) return ''; const cur=x.col==='receber'?(x.formaRec||'Não informada'):x.forma;
-  return formaSel(x,cur)+(x.formaOrig?`<span class="small">era ${esc(x.formaOrig)}</span>`:'')+(x.formaAuto&&cur===({cheque:'Cheque','cheque-cr':'Cheque',boleto:'Boleto'})[x.formaAuto]?`<span class="small">${({cheque:'cheque, conforme o pedido','cheque-cr':'cheque, conforme o Contas a Receber',boleto:'boleto, conforme o extrato'})[x.formaAuto]}</span>`:''); }
+  return formaSel(x,cur)+(x.formaOrig?`<span class="small">era ${esc(x.formaOrig)}</span>`:'')+(x.formaAuto&&cur===({cheque:'Cheque','cheque-cr':'Cheque',boleto:'Boleto',recebidos:x.formaRec||x.forma})[x.formaAuto]?`<span class="small">${({cheque:'cheque, conforme o pedido','cheque-cr':'cheque, conforme o Contas a Receber',boleto:'boleto, conforme o extrato',recebidos:'conforme relatório de recebidos'+(x.formaMista?` (misto: ${x.formaMista})`:'')})[x.formaAuto]}</span>`:''); }
 const FORMAS_R=[...FORMAS,BSB];
 const BANCO=['Pix','Transferência','Boleto','Depósito','Outros'];
 function formaEntrada(t){
@@ -1276,6 +1276,21 @@ function aplicarRecebidos(rows){
   D.vendas.forEach(v=>{ if(!v.pedido||!porPed[v.pedido]||v.recebidoRel) return; if(!['Pix','Transferência','Outros'].includes(v.forma)) return;
     const ls=porPed[v.pedido]; const pago=ls.reduce((a,x)=>a+x.pg,0); const sal=ls.reduce((a,x)=>x.pag>=a.d?{d:x.pag,s:x.saldo}:a,{d:'',s:0}).s;
     if(sal>0||pago<=0) return; v.recebidoRel={data:ls.map(x=>x.pag).sort().pop(),forma:ls.slice().sort((a,b)=>b.pg-a.pg)[0].forma}; touch('vendas',v); r_.vendas++; r_.vVendas+=v.valor; });
+  // forma de pagamento: títulos já baixados sem forma informada (e vendas com forma "Outros") passam a ter a forma do relatório
+  r_.formas=0; r_.vFormas=0; r_.porForma={}; r_.vendasForma=0;
+  const LIx=linkIndex();
+  D.receber.forEach(r=>{ if(!r.baixado||r.formaRec||AJ.formas[r.id]||LIx[r.id]||!r.pedido||!porPed[r.pedido]) return;
+    const gs=grupos(r.pedido); if(!gs.length) return;
+    const g=gs.find(g=>g.venc===r.venc)||gs.find(g=>g.pgTotal===r.valor||g.pg===r.valor||(r.valorTit&&g.pgTotal===r.valorTit))||(gs.length===1?gs[0]:null)
+      ||gs.slice().sort((a,b)=>Math.abs(dayDiff(a.venc,r.venc||a.venc))-Math.abs(dayDiff(b.venc,r.venc||b.venc)))[0];
+    if(!g||!g.forma) return;
+    const fs=[...new Set(g.linhas.map(x=>x.forma))];
+    r.formaRec=g.forma; r.formaAuto='recebidos'; if(fs.length>1) r.formaMista=g.linhas.map(x=>`${x.forma} ${money(x.pg)}`).join(' + ');
+    if(!r.dataBaixa) r.dataBaixa=g.ultimo; touch('receber',r); r_.formas++; r_.vFormas+=r.valor; r_.porForma[g.forma]=(r_.porForma[g.forma]||0)+1; });
+  D.vendas.forEach(v=>{ if(v.forma!=='Outros'||AJ.formas[v.id]||LIx[v.id]||!v.pedido||!porPed[v.pedido]) return;
+    const fs=[...new Set(porPed[v.pedido].map(x=>x.forma))]; if(fs.length!==1||fs[0]==='Outros') return;
+    const f=fs[0]==='Boleto'||fs[0]==='Depósito'?'Transferência':fs[0]; if(!OPC.vendas.includes(f)) return;
+    v.formaOrig=v.forma; v.forma=f; v.formaAuto='recebidos'; touch('vendas',v); r_.vendasForma++; });
   return r_;
 }
 // Extrato Sicoob: só créditos
@@ -1551,7 +1566,7 @@ async function importarPdfs(files){
           (S._snapAb=S._snapAb||[]).push({de:b2i(mv[1]),ate:b2i(mv[2]),chaves:new Set(items.map(chaveTitulo)),pedidos:new Set(items.map(x=>x.pedido).filter(Boolean)),total:sum(items),n:items.length});
         const ab=items.filter(x=>!x.baixado); res.push(`Contas a receber: ${ab.length} em aberto${items.length-ab.length?`, ${items.length-ab.length} já baixado(s)`:''}`); }
       else if(t==='recebidos'){ const {rows,meta}=lerRecebidos(L); const tot=rows.reduce((a,x)=>a+x.pgTotal,0); const a=aplicarRecebidos(rows);
-        res.push(`Recebidos (sistema): ${rows.length} pagamento(s), ${money(tot)}${meta?(meta.n===rows.length&&meta.total===tot?' (confere com o relatório)':` (relatório indica ${meta.n} / ${money(meta.total)})`):''} · baixa em ${a.titulos} título(s) que estavam em aberto/atrasados (${money(a.vTit)})${a.parciais?` · ${a.parciais} com pagamento parcial (fica só o saldo)`:''} · ${a.vendas} venda(s) Pix/transferência confirmadas como recebidas (${money(a.vVendas)})`); }
+        res.push(`Recebidos (sistema): ${rows.length} pagamento(s), ${money(tot)}${meta?(meta.n===rows.length&&meta.total===tot?' (confere com o relatório)':` (relatório indica ${meta.n} / ${money(meta.total)})`):''} · baixa em ${a.titulos} título(s) que estavam em aberto/atrasados (${money(a.vTit)})${a.parciais?` · ${a.parciais} com pagamento parcial (fica só o saldo)`:''} · ${a.vendas} venda(s) Pix/transferência confirmadas como recebidas (${money(a.vVendas)})`+(a.formas?` · forma de pagamento identificada em ${a.formas} título(s) que estavam sem forma (${money(a.vFormas)}: ${Object.entries(a.porForma).sort((x,y)=>y[1]-x[1]).map(([f,n])=>f+' '+n).join(', ')})`:'')+(a.vendasForma?` · ${a.vendasForma} venda(s) com forma "Outros" identificadas`:'')); }
       else erros.push(f.name);
     }catch(e){ console.error(e); erros.push(f.name); }
   }
