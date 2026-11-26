@@ -678,7 +678,7 @@ function calc(){
   servMan.forEach(x=>{ const f=porForma[x.forma]?x.forma:'Outros'; porForma[f].total+=x.valor; porForma[f].itens.push({k:'serv',x}); });
   const recebido=FORMAS_R.reduce((a,f)=>a+porForma[f].total,0);
   const receberAll=D.receber;
-  const abertos=receberAll.filter(r=>!r.baixado&&(!LI[r.id]||LI[r.id].st!=='ok'));
+  const abertos=receberAll.filter(r=>!r.baixado&&!r.foraDoAberto&&(!LI[r.id]||LI[r.id].st!=='ok'));
   const atrasados=abertos.filter(r=>r.venc<HOJE);
   const previstos=abertos.filter(r=>r.venc>=HOJE);
   // no Painel e no relatório: só o que vence dentro do período escolhido (valor real daquele período)
@@ -1242,6 +1242,19 @@ function lerRecebidos(L){
   }
   return {rows,meta};
 }
+// título que o app mostra em aberto, vence dentro do intervalo do relatório de "em aberto" e não está nele: já não está em aberto no sistema
+function aplicarPosicaoAbertos(){
+  const sn=S._snapAb; S._snapAb=null; if(!sn||!sn.length) return '';
+  let fora=0,vFora=0,volta=0;
+  for(const p of sn){
+    D.receber.forEach(r=>{ if(r.baixado||r.parcial||!r.venc) return;
+      if(r.origem!=='venda'&&p.chaves.has(chaveTitulo(r))){ if(r.foraDoAberto){ delete r.foraDoAberto; touch('receber',r); volta++; } return; }
+      if(r.venc<p.de||r.venc>p.ate) return;
+      if(r.saldoRel||r.saldoDoParcial) return; // pago parcial não aparece no filtro "Aberto"
+      if(!r.foraDoAberto){ r.foraDoAberto={data:HOJE,de:p.de,ate:p.ate}; touch('receber',r); fora++; vFora+=r.valor; } }); }
+  const p=sn[sn.length-1];
+  return ` · posição do sistema (vencimentos de ${br(p.de)} a ${br(p.ate)}): ${p.n} título(s) em aberto, ${money(p.total)}`+(fora?` · ${fora} título(s) que o app mostrava em aberto e não estão mais em aberto no sistema foram retirados dos atrasados (${money(vFora)})`:'')+(volta?` · ${volta} voltaram a ficar em aberto`:'');
+}
 function aplicarRecebidos(rows){
   const porPed={}; rows.forEach(x=>{ (porPed[x.pedido]=porPed[x.pedido]||[]).push(x); });
   const r_={titulos:0,vTit:0,parciais:0,vendas:0,vVendas:0};
@@ -1503,6 +1516,7 @@ async function importarPdfs(files){
   const LOTE=Date.now(); S._jaMovido=0; S._pedMov=new Set(); const fotoP=fotoPedidos(), fotoT=fotoTitulos(); const pedNovos=new Set(), titNovos=new Set();
   const add=(col,x)=>{ if(col==='vendas'||col==='receber') x.lote=LOTE; if(col==='vendas'&&x.pedido) pedNovos.add(x.pedido); if(col==='receber'&&x.origem==='contas'&&!x.parcial&&(x.pedido||x.titulo)) titNovos.add(chaveTitulo(x));
     const ex=IDX[x.id]; if(ex&&ex.col===col&&col==='vendas'&&ex.date>x.date){ S._jaMovido=(S._jaMovido||0)+1; return 0; } // pedido já está numa data mais nova
+    if(ex&&ex.col===col&&col==='receber'&&x.baixado&&!x.baixaRel&&ex.baixaRel){ delete ex.baixaRel; delete ex.baixaManual; }
     if(ex&&ex.col===col){ const k0=gkey(col,ex); const bm=col==='receber'&&ex.baixaManual&&!x.baixado?{baixado:true,dataBaixa:ex.dataBaixa,formaRec:ex.formaRec,baixaManual:true,status:'Baixa manual',lote:ex.lote}:null; const keep={st:ex.st,links:ex.links,auto:ex.auto,manual:ex.manual,motivo:ex.motivo,resto:ex.resto}; if(!keep.resto) delete keep.resto;
       Object.assign(ex,x,col==='entradas'?keep:{},bm||{}); if(k0!==gkey(col,ex)){ markDirty(col,k0); if(col==='vendas'&&ex.pedido){ S._pedMov.add(ex.pedido); if(k0<ex.date) ex.dataAnterior=k0; } } touch(col,ex); return 0; }
     if(col==='entradas'){ x.st='ni'; x.links=[]; } D[col].push(x); IDX[x.id]=x; touch(col,x); return 1; };
@@ -1513,7 +1527,28 @@ async function importarPdfs(files){
         vendas.forEach(x=>{ nV+=add('vendas',x); datas.push(x.date); }); receber.forEach(x=>{ if(!D.receber.some(y=>y.id===x.id)) nR+=add('receber',x); });
         const tot=sum(r.ped,p=>p.total); const conf=r.meta?(r.meta.n===r.ped.length&&r.meta.total===tot?' (confere com o total do relatório)':` (relatório indica ${r.meta.n} pedidos)`):'';
         res.push(`Vendas: ${r.ped.length} pedido(s), ${money(tot)}${conf}`); }
-      else if(t==='receber'){ const items=lerReceber(L); items.forEach(x=>{ nR+=add('receber',x); });
+      else if(t==='receber'){ const items=lerReceber(L);
+        const flt=L.map(l=>l.replace(/\s*\|\s*/g,' ')).find(l=>/^Filtros:/i.test(l))||'';
+        const stF=(flt.split(/Status\s*=/i)[1]||'');
+        // relatório de títulos pagos filtrado por vencimento (conferência de um período inteiro): dá baixa no que o app tinha em aberto,
+        // sem mexer nos totais de recebido por forma dos dias (como o relatório de recebidos)
+        let conf=null;
+        if(/Data Vencimento/i.test(flt)&&/Pago/i.test(stF)&&!/\bAberto\b/i.test(stF)){
+          const porChave=new Map(); D.receber.forEach(r=>{ if(r.origem==='venda'||r.parcial) return; const k=chaveTitulo(r); (porChave.get(k)||porChave.set(k,[]).get(k)).push(r); });
+          const parcAb=new Set(D.receber.filter(r=>r.origem==='venda'&&!r.baixado&&!r.foraDoAberto).map(r=>r.pedido));
+          conf={n:0,v:0,abertos:0,vAb:0,ja:0,novos:0};
+          items.forEach(x=>{ if(!x.baixado) return; conf.n++; conf.v+=x.valor; const ex=IDX[x.id]||(porChave.get(chaveTitulo(x))||[])[0];
+            if(ex&&ex.baixado&&!ex.baixaRel){ conf.ja++; if(ex.id!==x.id) x._skip=true; return; }
+            x.baixaRel=true; x.baixaManual=true;
+            if((ex&&!ex.baixado&&!ex.foraDoAberto)||parcAb.has(x.pedido)){ conf.abertos++; conf.vAb+=x.valor; } else if(ex) conf.ja++; else conf.novos++; });
+          items.forEach(x=>{ if(x.baixaRel){ const ex=IDX[x.id]; if(ex&&ex.formaRec&&!x.formaRec) x.formaRec=ex.formaRec; } });
+        }
+        items.forEach(x=>{ if(!x._skip) nR+=add('receber',x); });
+        if(conf) res.push(`Conferência de pagos (vencimentos do filtro): ${conf.n} título(s) pagos, ${money(conf.v)} · ${conf.abertos} estavam em aberto/atrasados no app e receberam baixa (${money(conf.vAb)}) · ${conf.ja} já estavam baixados · ${conf.novos} não estavam no app (entram como pagos, sem mudar os totais por forma)`);
+        // relatório só de títulos "Aberto" filtrado por vencimento = posição completa do que está em aberto naquele intervalo
+        const mv=/Data Vencimento\s*=\s*(\d{2}\/\d{2}\/\d{4})\s*At[ée]\s*(\d{2}\/\d{2}\/\d{4})/i.exec(flt);
+        if(mv&&/Status\s*=.*\bAberto\b/i.test(flt)&&!/Pago/i.test(flt.split(/Status\s*=/i)[1]||'')&&items.length&&items.every(x=>!x.baixado))
+          (S._snapAb=S._snapAb||[]).push({de:b2i(mv[1]),ate:b2i(mv[2]),chaves:new Set(items.map(chaveTitulo)),pedidos:new Set(items.map(x=>x.pedido).filter(Boolean)),total:sum(items),n:items.length});
         const ab=items.filter(x=>!x.baixado); res.push(`Contas a receber: ${ab.length} em aberto${items.length-ab.length?`, ${items.length-ab.length} já baixado(s)`:''}`); }
       else if(t==='recebidos'){ const {rows,meta}=lerRecebidos(L); const tot=rows.reduce((a,x)=>a+x.pgTotal,0); const a=aplicarRecebidos(rows);
         res.push(`Recebidos (sistema): ${rows.length} pagamento(s), ${money(tot)}${meta?(meta.n===rows.length&&meta.total===tot?' (confere com o relatório)':` (relatório indica ${meta.n} / ${money(meta.total)})`):''} · baixa em ${a.titulos} título(s) que estavam em aberto/atrasados (${money(a.vTit)})${a.parciais?` · ${a.parciais} com pagamento parcial (fica só o saldo)`:''} · ${a.vendas} venda(s) Pix/transferência confirmadas como recebidas (${money(a.vVendas)})`); }
@@ -1522,12 +1557,12 @@ async function importarPdfs(files){
   }
   const lend=$('#lendo'); if(lend) lend.remove();
   if(!res.length){ toast(`Não reconheci ${erros.join(', ')}. Envie o extrato Sicoob ou Bradesco, o Contas a Receber Recebidos, o Listar Pedido por Data ou o Contas a Receber em PDF.`,7000); return; }
-  chequeDoContasReceber(); deduplicar(); reindex(); const nTroca=compararFotos(fotoP,fotoT,pedNovos,titNovos); aplicarAjustes(); const c=conciliarAuto(); await flush();
+  chequeDoContasReceber(); deduplicar(); reindex(); const snapRes=aplicarPosicaoAbertos(); reindex(); const nTroca=compararFotos(fotoP,fotoT,pedNovos,titNovos); aplicarAjustes(); const c=conciliarAuto(); await flush();
   const dExt=datas.filter((d,i)=>datasExt.has(i)); const base=(dExt.length?dExt:datas).slice().sort();
   if(base.length){ S.de=dExt.length?base[0]:base[base.length-1]; S.ate=base[base.length-1]; S.quick=''; }
   if(S.tab!=='dia'&&S.tab!=='painel') S.tab='dia'; if(base.length) S.dia=base[base.length-1]; render();
   const mvT=(S._jaMovido?` · ${S._jaMovido} lançamento(s) de pedido(s) já estavam numa data mais nova e ficaram lá`:'')+(S._movidos&&(S._movidos.ped||S._movidos.tit)?` · ${S._movidos.ped?`${S._movidos.ped} pedido(s) mudaram de data e foram movidos`:''}${S._movidos.ped&&S._movidos.tit?' e ':''}${S._movidos.tit?`${S._movidos.tit} título(s) repetido(s) substituído(s)`:''}`:'');
-  toast(res.join(' · ')+mvT+(nTroca?` · ⚠ ${nTroca} repetido(s) com valor diferente (vale o último; veja no Painel)`:'')+`. Conciliação: 🟢 ${c.ok||0} · 🟡 ${c.conf||0} · 🔴 ${c.ni||0}.`+(erros.length?` Não reconheci: ${erros.join(', ')}.`:''),9000);
+  toast(res.join(' · ')+mvT+(snapRes||'')+(nTroca?` · ⚠ ${nTroca} repetido(s) com valor diferente (vale o último; veja no Painel)`:'')+`. Conciliação: 🟢 ${c.ok||0} · 🟡 ${c.conf||0} · 🔴 ${c.ni||0}.`+(erros.length?` Não reconheci: ${erros.join(', ')}.`:''),9000);
 }
 function vImportar(){
   const q=t=>`${D[t].length} lançamento(s) salvos`;
